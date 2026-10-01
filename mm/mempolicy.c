@@ -600,9 +600,11 @@ unsigned long change_prot_numa(struct vm_area_struct *vma,
 {
 	int nr_updated;
 
+	vm_write_begin(vma);
 	nr_updated = change_protection(vma, addr, end, PAGE_NONE, 0, 1);
 	if (nr_updated)
 		count_vm_numa_events(NUMA_PTE_UPDATES, nr_updated);
+	vm_write_end(vma);
 
 	return nr_updated;
 }
@@ -845,11 +847,11 @@ static void get_policy_nodemask(struct mempolicy *p, nodemask_t *nodes)
 
 static int lookup_node(unsigned long addr)
 {
-	struct page *p;
+	struct page *p = NULL;
 	int err;
 
 	err = get_user_pages(addr & PAGE_MASK, 1, 0, &p, NULL);
-	if (err >= 0) {
+	if (err > 0) {
 		err = page_to_nid(p);
 		put_page(p);
 	}

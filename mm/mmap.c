@@ -155,27 +155,6 @@ void unlink_file_vma(struct vm_area_struct *vma)
 	}
 }
 
-static void __free_vma(struct vm_area_struct *vma)
-{
-	if (vma->vm_file)
-		fput(vma->vm_file);
-	mpol_put(vma_policy(vma));
-	kmem_cache_free(vm_area_cachep, vma);
-}
-
-#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
-void put_vma(struct vm_area_struct *vma)
-{
-	if (atomic_dec_and_test(&vma->vm_ref_count))
-		__free_vma(vma);
-}
-#else
-static inline void put_vma(struct vm_area_struct *vma)
-{
-	__free_vma(vma);
-}
-#endif
-
 /*
  * Close a vm structure and free it, returning the next.
  */
@@ -186,7 +165,10 @@ static struct vm_area_struct *remove_vma(struct vm_area_struct *vma)
 	might_sleep();
 	if (vma->vm_ops && vma->vm_ops->close)
 		vma->vm_ops->close(vma);
-	put_vma(vma);
+	if (vma->vm_file)
+		fput(vma->vm_file);
+	mpol_put(vma_policy(vma));
+	kmem_cache_free(vm_area_cachep, vma);
 	return next;
 }
 
@@ -406,14 +388,6 @@ static void validate_mm(struct mm_struct *mm)
 #define validate_mm(mm) do { } while (0)
 #endif
 
-#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
-#define mm_rb_write_lock(mm)	write_lock(&(mm)->mm_rb_lock)
-#define mm_rb_write_unlock(mm)	write_unlock(&(mm)->mm_rb_lock)
-#else
-#define mm_rb_write_lock(mm)	do { } while (0)
-#define mm_rb_write_unlock(mm)	do { } while (0)
-#endif /* CONFIG_SPECULATIVE_PAGE_FAULT */
-
 RB_DECLARE_CALLBACKS(static, vma_gap_callbacks, struct vm_area_struct, vm_rb,
 		     unsigned long, rb_subtree_gap, vma_compute_subtree_gap)
 
@@ -432,37 +406,26 @@ static void vma_gap_update(struct vm_area_struct *vma)
 }
 
 static inline void vma_rb_insert(struct vm_area_struct *vma,
-				 struct mm_struct *mm)
+				 struct rb_root *root)
 {
-	struct rb_root *root = &mm->mm_rb;
-
 	/* All rb_subtree_gap values must be consistent prior to insertion */
 	validate_mm_rb(root, NULL);
 
 	rb_insert_augmented(&vma->vm_rb, root, &vma_gap_callbacks);
 }
 
-static void __vma_rb_erase(struct vm_area_struct *vma, struct mm_struct *mm)
+static void __vma_rb_erase(struct vm_area_struct *vma, struct rb_root *root)
 {
-	struct rb_root *root = &mm->mm_rb;
 	/*
 	 * Note rb_erase_augmented is a fairly large inline function,
 	 * so make sure we instantiate it only once with our desired
 	 * augmented rbtree callbacks.
 	 */
-	mm_rb_write_lock(mm);
 	rb_erase_augmented(&vma->vm_rb, root, &vma_gap_callbacks);
-	mm_rb_write_unlock(mm); /* wmb */
-
-	/*
-	 * Ensure the removal is complete before clearing the node.
-	 * Matched by vma_has_changed()/handle_speculative_fault().
-	 */
-	RB_CLEAR_NODE(&vma->vm_rb);
 }
 
 static __always_inline void vma_rb_erase_ignore(struct vm_area_struct *vma,
-						struct mm_struct *mm,
+						struct rb_root *root,
 						struct vm_area_struct *ignore)
 {
 	/*
@@ -470,21 +433,21 @@ static __always_inline void vma_rb_erase_ignore(struct vm_area_struct *vma,
 	 * with the possible exception of the "next" vma being erased if
 	 * next->vm_start was reduced.
 	 */
-	validate_mm_rb(&mm->mm_rb, ignore);
+	validate_mm_rb(root, ignore);
 
-	__vma_rb_erase(vma, mm);
+	__vma_rb_erase(vma, root);
 }
 
 static __always_inline void vma_rb_erase(struct vm_area_struct *vma,
-					 struct mm_struct *mm)
+					 struct rb_root *root)
 {
 	/*
 	 * All rb_subtree_gap values must be consistent prior to erase,
 	 * with the possible exception of the vma being erased.
 	 */
-	validate_mm_rb(&mm->mm_rb, vma);
+	validate_mm_rb(root, vma);
 
-	__vma_rb_erase(vma, mm);
+	__vma_rb_erase(vma, root);
 }
 
 /*
@@ -599,12 +562,10 @@ void __vma_link_rb(struct mm_struct *mm, struct vm_area_struct *vma,
 	 * immediately update the gap to the correct value. Finally we
 	 * rebalance the rbtree after all augmented values have been set.
 	 */
-	mm_rb_write_lock(mm);
 	rb_link_node(&vma->vm_rb, rb_parent, rb_link);
 	vma->rb_subtree_gap = 0;
 	vma_gap_update(vma);
-	vma_rb_insert(vma, mm);
-	mm_rb_write_unlock(mm);
+	vma_rb_insert(vma, &mm->mm_rb);
 }
 
 static void __vma_link_file(struct vm_area_struct *vma)
@@ -680,7 +641,7 @@ static __always_inline void __vma_unlink_common(struct mm_struct *mm,
 {
 	struct vm_area_struct *next;
 
-	vma_rb_erase_ignore(vma, mm, ignore);
+	vma_rb_erase_ignore(vma, &mm->mm_rb, ignore);
 	next = vma->vm_next;
 	if (has_prev)
 		prev->vm_next = next;
@@ -725,30 +686,6 @@ int __vma_adjust(struct vm_area_struct *vma, unsigned long start,
 	bool start_changed = false, end_changed = false;
 	long adjust_next = 0;
 	int remove_next = 0;
-
-	/*
-	 * Why using vm_raw_write*() functions here to avoid lockdep's warning ?
-	 *
-	 * Locked is complaining about a theoretical lock dependency, involving
-	 * 3 locks:
-	 *   mapping->i_mmap_rwsem --> vma->vm_sequence --> fs_reclaim
-	 *
-	 * Here are the major path leading to this dependency :
-	 *  1. __vma_adjust() mmap_sem  -> vm_sequence -> i_mmap_rwsem
-	 *  2. move_vmap() mmap_sem -> vm_sequence -> fs_reclaim
-	 *  3. __alloc_pages_nodemask() fs_reclaim -> i_mmap_rwsem
-	 *  4. unmap_mapping_range() i_mmap_rwsem -> vm_sequence
-	 *
-	 * So there is no way to solve this easily, especially because in
-	 * unmap_mapping_range() the i_mmap_rwsem is grab while the impacted
-	 * VMAs are not yet known.
-	 * However, the way the vm_seq is used is guarantying that we will
-	 * never block on it since we just check for its value and never wait
-	 * for it to move, see vma_has_changed() and handle_speculative_fault().
-	 */
-	vm_raw_write_begin(vma);
-	if (next)
-		vm_raw_write_begin(next);
 
 	if (next && !insert) {
 		struct vm_area_struct *exporter = NULL, *importer = NULL;
@@ -952,13 +889,15 @@ again:
 	}
 
 	if (remove_next) {
-		if (file)
+		if (file) {
 			uprobe_munmap(next, next->vm_start, next->vm_end);
+			fput(file);
+		}
 		if (next->anon_vma)
 			anon_vma_merge(vma, next);
 		mm->map_count--;
-		vm_raw_write_end(next);
-		put_vma(next);
+		mpol_put(vma_policy(next));
+		kmem_cache_free(vm_area_cachep, next);
 		/*
 		 * In mprotect's case 6 (see comments on vma_merge),
 		 * we must remove another next too. It would clutter
@@ -972,8 +911,6 @@ again:
 			 * "vma->vm_next" gap must be updated.
 			 */
 			next = vma->vm_next;
-			if (next)
-				vm_raw_write_begin(next);
 		} else {
 			/*
 			 * For the scope of the comment "next" and
@@ -1019,10 +956,6 @@ again:
 	}
 	if (insert && file)
 		uprobe_mmap(insert);
-
-	if (next && next != vma)
-		vm_raw_write_end(next);
-	vm_raw_write_end(vma);
 
 	validate_mm(mm);
 
@@ -1778,7 +1711,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 	vma->vm_flags = vm_flags;
 	vma->vm_page_prot = vm_get_page_prot(vm_flags);
 	vma->vm_pgoff = pgoff;
-	INIT_VMA(vma);
+	INIT_LIST_HEAD(&vma->anon_vma_chain);
 
 	if (file) {
 		if (vm_flags & VM_DENYWRITE) {
@@ -2225,11 +2158,15 @@ get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
 EXPORT_SYMBOL(get_unmapped_area);
 
 /* Look up the first VMA which satisfies  addr < vm_end,  NULL if none. */
-static struct vm_area_struct *__find_vma(struct mm_struct *mm,
-					 unsigned long addr)
+struct vm_area_struct *find_vma(struct mm_struct *mm, unsigned long addr)
 {
 	struct rb_node *rb_node;
-	struct vm_area_struct *vma = NULL;
+	struct vm_area_struct *vma;
+
+	/* Check the cache first. */
+	vma = vmacache_find(mm, addr);
+	if (likely(vma))
+		return vma;
 
 	rb_node = mm->mm_rb.rb_node;
 
@@ -2247,53 +2184,12 @@ static struct vm_area_struct *__find_vma(struct mm_struct *mm,
 			rb_node = rb_node->rb_right;
 	}
 
-	return vma;
-}
-
-struct vm_area_struct *find_vma(struct mm_struct *mm, unsigned long addr)
-{
-	struct vm_area_struct *vma;
-
-	/* Check the cache first. */
-	vma = vmacache_find(mm, addr);
-	if (likely(vma))
-		return vma;
-
-	vma = __find_vma(mm, addr);
 	if (vma)
 		vmacache_update(addr, vma);
 	return vma;
 }
+
 EXPORT_SYMBOL(find_vma);
-
-#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
-struct vm_area_struct *get_vma(struct mm_struct *mm, unsigned long addr)
-{
-	struct vm_area_struct *vma = NULL;
-
-	read_lock(&mm->mm_rb_lock);
-	vma = __find_vma(mm, addr);
-
-	/*
-	 * If there is a concurrent fast mremap, bail out since the entire
-	 * PMD/PUD subtree may have been remapped.
-	 *
-	 * This is usually safe for conventional mremap since it takes the
-	 * PTE locks as does SPF. However fast mremap only takes the lock
-	 * at the PMD/PUD level which is ok as it is done with the mmap
-	 * write lock held. But since SPF, as the term implies forgoes,
-	 * taking the mmap read lock and also cannot take PTL lock at the
-	 * larger PMD/PUD granualrity, since it would introduce huge
-	 * contention in the page fault path; fall back to regular fault
-	 * handling.
-	 */
-	if (vma && !atomic_inc_unless_negative(&vma->vm_ref_count))
-		vma = NULL;
-	read_unlock(&mm->mm_rb_lock);
-
-	return vma;
-}
-#endif
 
 /*
  * Same as find_vma, but also return a pointer to the previous VMA in *pprev.
@@ -2682,7 +2578,7 @@ detach_vmas_to_be_unmapped(struct mm_struct *mm, struct vm_area_struct *vma,
 	insertion_point = (prev ? &prev->vm_next : &mm->mmap);
 	vma->vm_prev = NULL;
 	do {
-		vma_rb_erase(vma, mm);
+		vma_rb_erase(vma, &mm->mm_rb);
 		mm->map_count--;
 		tail_vma = vma;
 		vma = vma->vm_next;
@@ -2722,7 +2618,7 @@ int __split_vma(struct mm_struct *mm, struct vm_area_struct *vma,
 	/* most fields are the same, copy all, and then fixup */
 	*new = *vma;
 
-	INIT_VMA(new);
+	INIT_LIST_HEAD(&new->anon_vma_chain);
 
 	if (new_below)
 		new->vm_end = addr;
@@ -3087,7 +2983,7 @@ static int do_brk_flags(unsigned long addr, unsigned long len, unsigned long fla
 		return -ENOMEM;
 	}
 
-	INIT_VMA(vma);
+	INIT_LIST_HEAD(&vma->anon_vma_chain);
 	vma->vm_mm = mm;
 	vma->vm_start = addr;
 	vma->vm_end = addr + len;
@@ -3307,7 +3203,7 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 		new_vma->vm_pgoff = pgoff;
 		if (vma_dup_policy(vma, new_vma))
 			goto out_free_vma;
-		INIT_VMA(new_vma);
+		INIT_LIST_HEAD(&new_vma->anon_vma_chain);
 		if (anon_vma_clone(new_vma, vma))
 			goto out_free_mempol;
 		if (new_vma->vm_file)
@@ -3448,7 +3344,7 @@ static struct vm_area_struct *__install_special_mapping(
 	if (unlikely(vma == NULL))
 		return ERR_PTR(-ENOMEM);
 
-	INIT_VMA(vma);
+	INIT_LIST_HEAD(&vma->anon_vma_chain);
 	vma->vm_mm = mm;
 	vma->vm_start = addr;
 	vma->vm_end = addr + len;
