@@ -1,4 +1,4 @@
-name: Mojito - strix-KSUNext-susfs
+name: Mojito - WestCoast-KSUNext-susfs
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
       - name: Télécharger le source
         uses: actions/checkout@v4
         with:
-          ref: 17.0
+          ref: A17
           fetch-depth: 1
           submodules: recursive
 
@@ -127,7 +127,7 @@ jobs:
           
 
           ./scripts/config --file out/.config \
-            --set-str LOCALVERSION "-Strix"
+            --set-str LOCALVERSION "-WestCoast"
           ./scripts/config --file out/.config --disable CONFIG_LOCALVERSION_AUTO
 
           # Evite le build cassé du compat vDSO avec LLVM
