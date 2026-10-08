@@ -206,10 +206,15 @@ do_stop_machine:
 	pr_info("%s: type: stop_machine()\n", __func__);
 	stop_machine(apply_kernelsu_rules_fn, (void *)db, NULL);
 
-out_flush:
+out_flush: // trap retards patching policydb after this
+	*(volatile typeof(*db) **)&db = nullptr;
 	smp_mb();
 	reset_avc_cache();
 #endif
+/**
+ * NOTE: some of you will be calling ksu_allow(...) here like a retard.
+ * look up, that shit doesnt go here.
+ */
 }
 
 #define KSU_SEPOLICY_MAX_BATCH_SIZE (8U * 1024U * 1024U)
