@@ -1,4 +1,4 @@
-name: Mojito - STRIX-KernelSU-SUSFS
+name: Mojito -WestCoast-KernelSUxx-SUSFS
 
 on:
   workflow_dispatch:
