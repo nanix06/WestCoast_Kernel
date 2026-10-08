@@ -1,0 +1,171 @@
+name: Mojito - strix-KSUNext-susfs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ARCH: arm64
+  SUBARCH: arm64
+  DEFCONFIG: mojito_defconfig
+  CROSS_COMPILE: aarch64-linux-gnu-
+  CROSS_COMPILE_ARM32: arm-linux-gnueabi-
+  CROSS_COMPILE_COMPAT: arm-linux-gnueabi-
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Télécharger le source
+        uses: actions/checkout@v4
+        with:
+          ref: 16.2
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Installer les dépendances
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ccache flex git libssl-dev \
+            libelf-dev pahole python3 rsync unzip wget zip \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi \
+            clang lld llvm
+ 
+      - name: Télécharger et appliquer les patchs KernelSU et SuSFS
+        run: |
+          git clone --depth=1 -b main https://github.com/nanix06/Patch_Ksu_SuSFS.git patches
+          patch -p1 --fuzz=3 < patches/Patches/SU_kernel/patch_ksunext.patch || true
+          patch -p1 --fuzz=3 < patches/Patches/SuSFS_Kernel/50_add_susfs_in_kernel-4.14.patch || true
+          patch -p1 --fuzz=3 < patches/Patches/Fix/susfs_fix_nameic.patch || true
+          patch -p1 --fuzz=3 < patches/Patches/Fix/susfs_fix_statc.patch || true
+          patch -p1 --fuzz=3 < patches/Patches/SuSFS_Kernel/55_try_umount_for_susfs.patch || true
+          patch -p1 --fuzz=3 < patches/Patches/SU_kernel/patch_ksu_path_umount.patch || true
+          sed -i 's/inotify_mark_user_mask(mark)/(mark->mask \& IN_ALL_EVENTS)/g' fs/notify/fdinfo.c
+          sed -i '/^orig_flow:$/a\\t\t;' fs/notify/fdinfo.c
+          sed -i '0,/^static void susfs_run_sus_path_loop(void) {/s//void susfs_run_sus_path_loop(void) {/' fs/susfs.c
+
+      - name: Ajouter KernelSU-Next
+        run: |
+          git clone --depth=1 -b legacy https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU
+          ln -s ../KernelSU/kernel drivers/kernelsu
+          sed -i 's/get_monotonic_boottime(&ts)/get_monotonic_boottime64(\&ts)/' KernelSU/kernel/sulog/event.c
+          sed -i '/#include <linux\/uaccess.h>/a #include <linux/timekeeping.h>' KernelSU/kernel/sulog/event.c
+
+          bash patches/Patches/Fix/fix_sepolicy_mojito.sh KernelSU
+
+          printf '%s\n' \
+            '#define KSU_TYPE_VAL_TO_STRUCT' \
+            '#include "ss/avtab.h"' \
+            '#include "ss/constraint.h"' \
+            '#include "ss/ebitmap.h"' \
+            '#include "ss/hashtab.h"' \
+            '#include "ss/policydb.h"' \
+            '#include "ss/services.h"' \
+            '#include "ss/symtab.h"' \
+            '#include <linux/gfp.h>' \
+            '#include <linux/kernel.h>' \
+            '#include <linux/printk.h>' \
+            '#include <linux/slab.h>' \
+            '#include <linux/stddef.h>' \
+            '#include <linux/string.h>' \
+            '#include <linux/types.h>' \
+            '#include <linux/version.h>' \
+            '#include <linux/vmalloc.h>' \
+            | cat - KernelSU/kernel/selinux/sepolicy.c > /tmp/sepolicy.c.net \
+            && mv /tmp/sepolicy.c.net KernelSU/kernel/selinux/sepolicy.c
+
+          cp patches/Patches/SuSFS_Ksu/susfs_patch_ksunext.patch KernelSU/
+          cd KernelSU
+          patch -p1 < susfs_patch_ksunext.patch || true
+          cd ..
+
+      - name: Ajouter KProfiles
+        run: |
+          git clone --depth=1 \
+            https://github.com/beakthoven/Kprofiles.git \
+            drivers/misc/kprofiles
+
+          printf '\nsource "drivers/misc/kprofiles/Kconfig"\n' >> drivers/misc/Kconfig
+          printf '\nobj-$(CONFIG_KPROFILES) += kprofiles/\n' >> drivers/misc/Makefile  
+
+      - name: Configurer le noyau
+        run: |
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+
+          mkdir -p out
+
+          make O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT" \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            "$DEFCONFIG"
+
+          # KernelSU
+          ./scripts/config --file out/.config --enable KSU
+          ./scripts/config --file out/.config --enable CONFIG_KALLSYMS_ALL
+
+          # SUSFS
+          ./scripts/config --file out/.config --enable KSU_SUSFS
+          ./scripts/config --file out/.config --enable KSU_SUSFS_HAS_MAGIC_MOUNT
+          ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_PATH
+          ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_MOUNT
+          ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_KSTAT
+          ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_OVERLAYFS
+          ./scripts/config --file out/.config --enable KSU_SUSFS_TRY_UMOUNT
+          ./scripts/config --file out/.config --enable KSU_SUSFS_SPOOF_UNAME_RELEASE
+          ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_MAP
+          ./scripts/config --file out/.config --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          
+
+          ./scripts/config --file out/.config \
+            --set-str LOCALVERSION "-Strix"
+          ./scripts/config --file out/.config --disable CONFIG_LOCALVERSION_AUTO
+
+          # Evite le build cassé du compat vDSO avec LLVM
+          ./scripts/config --file out/.config --disable CONFIG_COMPAT_VDSO
+
+          make O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT" \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            olddefconfig
+            
+      - name: Compiler le noyau
+        run: |
+          make -j"$(nproc)" O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT" \
+            KCFLAGS="-Wno-visibility -Wno-unused-but-set-variable -Wno-int-conversion -Wno-fortify-source" \
+            LLVM=1 \
+            LLVM_IAS=1
+
+      - name: Préparer les fichiers
+        run: |
+          mkdir -p release
+          cp out/arch/arm64/boot/Image.gz release/ 2>/dev/null || true
+          cp out/arch/arm64/boot/Image.gz-dtb release/ 2>/dev/null || true
+          cp out/arch/arm64/boot/Image release/ 2>/dev/null || true
+          sha256sum release/* > release/SHA256SUMS
+
+      - name: Envoyer l’artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mojito-strix-KernelSU
+          path: release/
+          if-no-files-found: error
