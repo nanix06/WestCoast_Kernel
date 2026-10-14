@@ -51,13 +51,62 @@ jobs:
 
       - name: Corriger l'injection initrc (hooks newfstat/fstat64 manquants)
         run: |
-          FIX=patches/Patches/Fix/patch_ksu_initrc_newfstat.patch
-          test -f "$FIX" || {
-            echo "ERREUR: $FIX absent (repo Patch_Ksu_SuSFS incomplet)"
-            exit 1
-          }
-          patch -p1 --fuzz=3 < "$FIX"
+          # Le patch kernelSU (nanix06) hooke newfstatat/fstatat64 -> ksu_handle_stat,
+          # mais oublie newfstat -> ksu_handle_newfstat_ret et fstat64 -> ksu_handle_fstat64_ret.
+          # Sans eux, init ne voit pas la taille reelle + accolee de init.rc, donc
+          # KERNEL_SU_RC / modules.rc ne sont jamais lus, ksud post-fs-data n'est jamais
+          # lance et les modules ne montent pas au boot.
+          #
+          # Insertion idempotente : independante des numeros de ligne (les patches SUSFS
+          # decalent fs/stat.c, ce qui faisait echouer le patch statique). On insere le
+          # hook juste avant le "return error;" de chaque fonction newfstat / fstat64.
+          python3 - <<'PY'
+          import sys
+          p = 'fs/stat.c'
+          s = open(p).read()
+          if 'ksu_handle_newfstat_ret' in s:
+              print('fs/stat.c: deja patche, rien a faire')
+              sys.exit(0)
+          lines = s.split('\n')
 
+          def find_start(name):
+              for i, l in enumerate(lines):
+                  if l.startswith('SYSCALL_DEFINE2(' + name + ','):
+                      return i
+              sys.exit('fs/stat.c: fonction %s introuvable' % name)
+
+          def return_line(start):
+              depth = 0
+              for i in range(start, len(lines)):
+                  if depth == 1 and lines[i].strip() == 'return error;':
+                      return i
+                  depth += lines[i].count('{') - lines[i].count('}')
+              sys.exit('fs/stat.c: return error introuvable')
+
+          def add_call(name, call):
+              i = return_line(find_start(name))
+              lines[i:i] = ['#ifdef CONFIG_KSU', call, '#endif', '']
+
+          extern = [
+              '#ifdef CONFIG_KSU',
+              'extern void ksu_handle_newfstat_ret(unsigned int *fd,',
+              '\t\t\t\tstruct stat __user **statbuf_ptr);',
+              '#if defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64)',
+              'extern void ksu_handle_fstat64_ret(unsigned long *fd,',
+              '\t\t\t\tstruct stat64 __user **statbuf_ptr);',
+              '#endif',
+              '#endif',
+              '',
+          ]
+
+          i = find_start('newfstat')
+          lines[i:i] = extern
+          add_call('newfstat', '\tksu_handle_newfstat_ret(&fd, &statbuf);')
+          add_call('fstat64', '\tksu_handle_fstat64_ret(&fd, &statbuf);')
+
+          open(p, 'w').write('\n'.join(lines))
+          print('fs/stat.c: hooks newfstat/fstat64 inseres')
+          PY
           grep -q 'ksu_handle_newfstat_ret' fs/stat.c
           grep -q 'ksu_handle_fstat64_ret' fs/stat.c
           echo "OK: hooks newfstat/fstat64 presents dans fs/stat.c"
