@@ -51,13 +51,6 @@ jobs:
 
       - name: Corriger l'injection initrc (hooks newfstat/fstat64 manquants)
         run: |
-          # Patch fourni par le repo Patch_Ksu_SuSFS (clone dans patches/).
-          #
-          # Le patch kernelSU (nanix06) hooke newfstatat/fstatat64 -> ksu_handle_stat,
-          # mais oublie newfstat -> ksu_handle_newfstat_ret et fstat64 -> ksu_handle_fstat64_ret.
-          # Sans eux, init ne voit pas la taille reelle + accolee de init.rc, donc
-          # KERNEL_SU_RC / modules.rc ne sont jamais lus, ksud post-fs-data n'est jamais
-          # lance et les modules ne montent pas au boot.
           FIX=patches/Patches/Fix/patch_ksu_initrc_newfstat.patch
           test -f "$FIX" || {
             echo "ERREUR: $FIX absent (repo Patch_Ksu_SuSFS incomplet)"
