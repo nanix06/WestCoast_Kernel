@@ -35,7 +35,7 @@ jobs:
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
             gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi \
             clang lld llvm
- 
+
       - name: Télécharger et appliquer les patchs KernelSU et SuSFS
         run: |
           git clone --depth=1 -b main https://github.com/nanix06/Patch_Ksu_SuSFS.git patches
@@ -48,6 +48,26 @@ jobs:
           sed -i 's/inotify_mark_user_mask(mark)/(mark->mask \& IN_ALL_EVENTS)/g' fs/notify/fdinfo.c
           sed -i '/^orig_flow:$/a\\t\t;' fs/notify/fdinfo.c
           sed -i '0,/^static void susfs_run_sus_path_loop(void) {/s//void susfs_run_sus_path_loop(void) {/' fs/susfs.c
+
+      - name: Corriger l'injection initrc (hooks newfstat/fstat64 manquants)
+        run: |
+          # Patch fourni par le repo Patch_Ksu_SuSFS (clone dans patches/).
+          #
+          # Le patch kernelSU (nanix06) hooke newfstatat/fstatat64 -> ksu_handle_stat,
+          # mais oublie newfstat -> ksu_handle_newfstat_ret et fstat64 -> ksu_handle_fstat64_ret.
+          # Sans eux, init ne voit pas la taille reelle + accolee de init.rc, donc
+          # KERNEL_SU_RC / modules.rc ne sont jamais lus, ksud post-fs-data n'est jamais
+          # lance et les modules ne montent pas au boot.
+          FIX=patches/Patches/Fix/patch_ksu_initrc_newfstat.patch
+          test -f "$FIX" || {
+            echo "ERREUR: $FIX absent (repo Patch_Ksu_SuSFS incomplet)"
+            exit 1
+          }
+          patch -p1 --fuzz=3 < "$FIX"
+
+          grep -q 'ksu_handle_newfstat_ret' fs/stat.c
+          grep -q 'ksu_handle_fstat64_ret' fs/stat.c
+          echo "OK: hooks newfstat/fstat64 presents dans fs/stat.c"
 
       - name: Ajouter KernelSU-Next
         run: |
