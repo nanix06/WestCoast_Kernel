@@ -79,6 +79,19 @@ jobs:
             | cat - KernelSU/kernel/selinux/sepolicy.c > /tmp/sepolicy.c.net \
             && mv /tmp/sepolicy.c.net KernelSU/kernel/selinux/sepolicy.c
 
+          # KernelSU-Next legacy appelle ksu_policydb_fixup_len(), absent du sepolicy.c backslashxx
+          cat >> KernelSU/kernel/selinux/sepolicy.c <<'EOF'
+
+          int ksu_policydb_fixup_len(struct policydb *db, const char *tag)
+          {
+              return 0;
+          }
+          EOF
+
+          cp patches/Patches/SuSFS_Ksu/susfs_patch_ksunext.patch KernelSU/
+          cd KernelSU
+          patch -p1 < susfs_patch_ksunext.patch || true
+          cd ..
           cp patches/Patches/SuSFS_Ksu/susfs_patch_ksunext.patch KernelSU/
           cd KernelSU
           patch -p1 < susfs_patch_ksunext.patch || true
