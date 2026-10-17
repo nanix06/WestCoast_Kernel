@@ -533,14 +533,21 @@ jobs:
       # ------------------------------------------------------------------
       # 8) Verification post-build
       # ------------------------------------------------------------------
-      - name: Verifier les symboles KSUNext + KSB dans vmlinux
+      - name: Verifier les symboles KSUNext + KSB
         run: |
           test -f out/vmlinux || { echo "ECHEC: vmlinux absent"; exit 1; }
+          test -f out/arch/arm64/boot/Image || { echo "ECHEC: Image absente"; exit 1; }
+
+          # Le noyau est lie en ThinLTO (CONFIG_LTO=y) : le LTO inline/interne les
+          # fonctions et les retire de vmlinux. On verifie donc les symboles dans les
+          # archives built-in.a (llvm-nm lit aussi le bitcode), pas dans vmlinux.
+          llvm-nm out/drivers/kernelsu/built-in.a > /tmp/ksu_syms.txt 2>/dev/null
+          llvm-nm out/drivers/ksubxx/built-in.a   > /tmp/ksb_syms.txt 2>/dev/null
 
           # cote KSUNext (doit exister)
           for sym in ksu_handle_execveat ksu_handle_faccessat ksu_handle_stat \
                      ksu_handle_newfstat_ret ksu_handle_sys_reboot ksu_cred; do
-            llvm-nm out/vmlinux | grep -qw "$sym" \
+            grep -qw "$sym" /tmp/ksu_syms.txt \
               || { echo "ECHEC: symbole KSUNext absent: $sym"; exit 1; }
           done
 
@@ -548,17 +555,20 @@ jobs:
           for sym in ksb_handle_execveat ksb_handle_faccessat ksb_handle_stat \
                      ksb_handle_newfstat_ret ksb_handle_fstat64_ret ksb_handle_sys_reboot \
                      ksb_setup_selinux ksb_cred; do
-            llvm-nm out/vmlinux | grep -qw "$sym" \
+            grep -qw "$sym" /tmp/ksb_syms.txt \
               || { echo "ECHEC: symbole KSB absent: $sym"; exit 1; }
           done
 
-          # pas de doublon de symboles globaux cote ksu/ksb/susfs
-          llvm-nm out/vmlinux | awk 'NF>2 {print $3}' | sort | uniq -d > /tmp/dups.txt
-          if grep -E '^(ksu|ksb|susfs)' /tmp/dups.txt; then
-            echo "ECHEC: symboles dupliques (voir ci-dessus)"; exit 1
+          # pas de symbole global ksu/ksb/susfs defini des deux cotes
+          for f in ksu ksb; do
+            awk '$2 ~ /^[TDBRVW]$/ {print $3}' /tmp/${f}_syms.txt | sort -u > /tmp/${f}_def.txt
+          done
+          comm -12 /tmp/ksu_def.txt /tmp/ksb_def.txt | grep -E '^(ksu|ksb|susfs)' > /tmp/dups.txt || true
+          if [ -s /tmp/dups.txt ]; then
+            echo "ECHEC: symboles definis des deux cotes :"; cat /tmp/dups.txt; exit 1
           fi
 
-          echo 'OK: KSUNext + KSB coexistent dans le meme vmlinux'
+          echo 'OK: KSUNext + KSB coexistent (lies dans vmlinux, symboles verifies dans built-in.a)'
 
       # ------------------------------------------------------------------
       # 9) Artefact
