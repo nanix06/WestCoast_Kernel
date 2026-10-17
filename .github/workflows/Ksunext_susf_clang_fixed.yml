@@ -142,6 +142,7 @@ jobs:
           grep -q 'ksu_handle_newfstat_ret' fs/stat.c
           grep -q 'ksu_handle_fstat64_ret' fs/stat.c
           echo "OK: hooks newfstat/fstat64 presents dans fs/stat.c"
+          
       - name: Ajouter KernelSU-Next
         run: |
           git clone --depth=1 -b legacy https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU
@@ -189,11 +190,15 @@ jobs:
           printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
           printf '\nsource "drivers/kernelsu/Kconfig"\n' >> Kconfig   
 
+      - name: Patch SuSFS for KernelSu
+        run: |
+          # For kernelsu Next 
           cp patches/Patches/SuSFS_Ksu/susfs_patch_ksunext.patch KernelSU/
           cd KernelSU
           patch -p1 < susfs_patch_ksunext.patch || true
           cd ..
 
+          # For kernelsu bxx
           cp patches/Patches/SuSFS_Ksu/susfs_patch_ksubxx.patch Ksubxx/
           cd Ksubxx
           patch -p1 < susfs_patch_ksubxx.patch || true
