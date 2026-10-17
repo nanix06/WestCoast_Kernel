@@ -190,19 +190,20 @@ jobs:
 
           # --- backslashxx : ksb_handle_stat apres chaque hook ksu_handle_stat ---
           if 'ksb_handle_stat' not in s:
-              # Recherche les 2 appels KSU newfstatat/fstatat64 tels qu'appliques par patch_ksunext
-              pat = re.compile(r'#if[ \t]+(?:defined[ \t]+\(CONFIG_KSU\))?[ \t]*\n[ \t]*ksu_handle_stat\(&dfd, &filename, &flag\);[^\n]*\n[ \t]*#endif\n')
-              m = pat.findall(s)
-              if len(m) >= 2:
-                  for block in m:
-                      ksb = ('#ifdef CONFIG_KSB\n'
-                             '\textern int ksb_handle_stat(int *, const char __user **, int *);\n'
-                             '\tksb_handle_stat(&dfd, &filename, &flag);\n'
-                             '#endif\n')
-                      s = s.replace(block, block + ksb)
-                  print('stat.c: ksb_handle_stat insere apres', len(m), 'blocs')
-              else:
-                  die('stat.c: 2 hooks ksu_handle_stat attendus, trouves: %d' % len(m))
+              # Insere ksb_handle_stat apres chaque appel ksu_handle_stat(&dfd, ...) ;
+              # tolerant : "#if defined(CONFIG_KSU)" / "#ifdef CONFIG_KSU", espaces finaux, etc.
+              pat = re.compile(r'(?m)^[ \t]*#[ \t]*if(?:def)?[ \t]*(?:defined[ \t]*\([ \t]*)?CONFIG_KSU[ \t]*\)?[ \t]*\n'
+                               r'[ \t]*ksu_handle_stat\(&dfd, &filename, &flag\);[ \t]*\n'
+                               r'[ \t]*#[ \t]*endif[^\n]*\n')
+              ksb = ('#ifdef CONFIG_KSB\n'
+                     '\textern int ksb_handle_stat(int *, const char __user **, int *);\n'
+                     '\tksb_handle_stat(&dfd, &filename, &flag);\n'
+                     '#endif\n')
+              n_ksu = len(pat.findall(s))
+              if n_ksu != 2:
+                  die('stat.c: 2 hooks ksu_handle_stat attendus, trouves: %d' % n_ksu)
+              s = pat.sub(lambda m: m.group(0) + ksb, s)
+              print('stat.c: ksb_handle_stat insere apres', n_ksu, 'blocs')
 
           # --- backslashxx : ksb_handle_newfstat_ret / fstat64_ret ---
           if 'ksb_handle_newfstat_ret' not in s:
