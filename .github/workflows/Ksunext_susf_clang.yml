@@ -184,8 +184,8 @@ jobs:
       - name: Ajouter backslashxx KernelSU
         run: |
           git clone --depth=1 \
-            https://github.com/backslashxx/KernelSU.git KernelSU
-          ln -s ../KernelSU/kernel drivers/kernelsu
+            https://github.com/backslashxx/KernelSU.git Ksubxx
+          ln -s ../Ksubxx/kernel drivers/kernelsu
           printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
           printf '\nsource "drivers/kernelsu/Kconfig"\n' >> Kconfig   
 
