@@ -200,10 +200,10 @@ jobs:
           printf '\nsource "drivers/kernelsu/Kconfig"\n' >> Kconfig   
 
           cp patches/Patches/SuSFS_Ksu/susfs_patch_ksunext.patch KernelSU/
-          cp patches/Patches/SuSFS_Ksu/susfs_patch_ksubxx.patch KernelSU/
+          cp patches/Patches/SuSFS_Ksu/10_enable_susfs_for_ksu.patch KernelSU/
           cd KernelSU
           patch -p1 < susfs_patch_ksunext.patch || true
-          patch -p1 < susfs_patch_ksubxx.patch || true
+          patch -p1 < 10_enable_susfs_for_ksu.patch || true
           cd ..
 
       - name: Ajouter KProfiles
