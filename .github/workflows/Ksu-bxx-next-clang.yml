@@ -381,6 +381,21 @@ jobs:
           grep -q 'obj-$(CONFIG_KSB) := ksu\.o' Ksubxx/kernel/Makefile \
             || { echo "ECHEC: objet unity ksu.o non lie a CONFIG_KSB"; exit 1; }
 
+          # 3b) Rattrapage des hunks rejetes de ksubxx_renamed_ksb.patch :
+          #     (a) fonctions renommees par le patch SANS prefixe ksu_ (le sed ne les voit pas)
+          #     (b) ksud/ksbd : le patch et le sed divergent -> on normalise tout sur "ksud"
+          find Ksubxx -type f \( -name '*.c' -o -name '*.h' \) -exec sed -i -E \
+            -e 's/(^|[^A-Za-z0-9_])on_boot_completed\(/\1ksb_on_boot_completed(/g' \
+            -e 's/(^|[^A-Za-z0-9_])on_module_mounted\(/\1ksb_on_module_mounted(/g' {} +
+          find Ksubxx -type f \( -name '*.c' -o -name '*.h' -o -name 'Kconfig' \) -exec sed -i -E \
+            -e 's/KSB_KPROBES_KSBD/KSB_KPROBES_KSUD/g' \
+            -e 's/kp_ksbd_init/kp_ksud_init/g' \
+            -e 's/ksb_ksbd_init/ksb_ksud_init/g' {} +
+          grep -rq 'ksb_on_boot_completed();' Ksubxx/kernel/supercall/dispatch.c \
+            || { echo "ECHEC: dispatch.c n'appelle pas ksb_on_boot_completed"; exit 1; }
+          grep -rq 'ksb_ksud_init()' Ksubxx/kernel/runtime/ksud.c \
+            || { echo "ECHEC: ksb_ksud_init non defini"; exit 1; }
+
           # 4) Glue SuSFS de bxx : symboles NON static aussi definis par KSUNext
           #    (pas de token "ksu" dedans -> renommage explicite obligatoire)
           find Ksubxx -type f \( -name '*.c' -o -name '*.h' \) -exec sed -i -E \
