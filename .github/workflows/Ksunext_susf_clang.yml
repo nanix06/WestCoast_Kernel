@@ -81,6 +81,7 @@ jobs:
         run: |
           git clone --depth=1 -b main https://github.com/nanix06/Patch_Ksu_SuSFS.git patches
           patch -p1 --fuzz=3 < patches/Patches/SU_kernel/patch_ksunext.patch || true
+          patch -p1 --fuzz=3 < patches/Patches/SU_kernel/patch_ksubxx.patch || true
           patch -p1 --fuzz=3 < patches/Patches/SuSFS_Kernel/50_add_susfs_in_kernel-4.14.patch || true
           patch -p1 --fuzz=3 < patches/Patches/SuSFS_Kernel/55_try_umount_for_susfs.patch || true
           patch -p1 --fuzz=3 < patches/Patches/SU_kernel/patch_ksu_path_umount.patch || true
@@ -180,9 +181,19 @@ jobs:
           }
           EOF
 
+      - name: Ajouter backslashxx KernelSU
+        run: |
+          git clone --depth=1 \
+            https://github.com/backslashxx/KernelSU.git KernelSU
+          ln -s ../KernelSU/kernel drivers/kernelsu
+          printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+          printf '\nsource "drivers/kernelsu/Kconfig"\n' >> Kconfig   
+
           cp patches/Patches/SuSFS_Ksu/susfs_patch_ksunext.patch KernelSU/
+          cp patches/Patches/SuSFS_Ksu/susfs_patch_ksubxx.patch KernelSU/
           cd KernelSU
           patch -p1 < susfs_patch_ksunext.patch || true
+          patch -p1 < susfs_patch_ksubxx.patch || true
           cd ..
 
       - name: Ajouter KProfiles
