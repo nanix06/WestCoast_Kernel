@@ -449,7 +449,11 @@ jobs:
           # KernelSU-Next
           ./scripts/config --file out/.config --enable KSU
           ./scripts/config --file out/.config --enable KSU_MANUAL_HOOK
+          # KALLSYMS_ALL depend de DEBUG_KERNEL (absent du defconfig) -> sinon silencieusement ignore
+          ./scripts/config --file out/.config --enable DEBUG_KERNEL
           ./scripts/config --file out/.config --enable KALLSYMS_ALL
+          # effet de bord de DEBUG_KERNEL (nouveau default, cout perf) : on le coupe
+          ./scripts/config --file out/.config --disable DEBUG_PREEMPT
 
           # backslashxx (KSB)
           ./scripts/config --file out/.config --enable KSB
