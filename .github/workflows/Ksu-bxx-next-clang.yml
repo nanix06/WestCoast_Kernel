@@ -85,8 +85,6 @@ jobs:
           git clone --depth=1 -b main https://github.com/nanix06/Patch_Ksu_SuSFS.git patches
 
           # Hooks KSUNext + wiring drivers/kernelsu + input.c/read_write.c
-          # (la 1re hunk, dans mojito_defconfig, est orpheline dans le patch :
-          #  on s'en carre, on active KSU via scripts/config plus loin)
           patch -p1 --fuzz=3 --batch < patches/Patches/SU_kernel/patch_ksunext.patch || true
           grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig \
             || { echo "ECHEC: wiring KSUNext absent de drivers/Kconfig"; exit 1; }
@@ -192,16 +190,19 @@ jobs:
 
           # --- backslashxx : ksb_handle_stat apres chaque hook ksu_handle_stat ---
           if 'ksb_handle_stat' not in s:
-              pat = re.compile(r'#if\w*\s*\(?(?:defined\s*)?CONFIG_KSU\)?\n'
-                               r'\tksu_handle_stat\(&dfd, &filename, &flag\);[ \t]*\n'
-                               r'#endif\n')
-              ksb = ('#ifdef CONFIG_KSB\n'
-                     '\textern int ksb_handle_stat(int *, const char __user **, int *);\n'
-                     '\tksb_handle_stat(&dfd, &filename, &flag);\n'
-                     '#endif\n')
-              s, n = pat.subn(lambda m: m.group(0) + ksb, s)
-              if n != 2:
-                  die('stat.c: 2 hooks ksu_handle_stat attendus, trouves: %d' % n)
+              # Recherche les 2 appels KSU newfstatat/fstatat64 tels qu'appliques par patch_ksunext
+              pat = re.compile(r'#if[ \t]+(?:defined[ \t]+\(CONFIG_KSU\))?[ \t]*\n[ \t]*ksu_handle_stat\(&dfd, &filename, &flag\);[^\n]*\n[ \t]*#endif\n')
+              m = pat.findall(s)
+              if len(m) >= 2:
+                  for block in m:
+                      ksb = ('#ifdef CONFIG_KSB\n'
+                             '\textern int ksb_handle_stat(int *, const char __user **, int *);\n'
+                             '\tksb_handle_stat(&dfd, &filename, &flag);\n'
+                             '#endif\n')
+                      s = s.replace(block, block + ksb)
+                  print('stat.c: ksb_handle_stat insere apres', len(m), 'blocs')
+              else:
+                  die('stat.c: 2 hooks ksu_handle_stat attendus, trouves: %d' % len(m))
 
           # --- backslashxx : ksb_handle_newfstat_ret / fstat64_ret ---
           if 'ksb_handle_newfstat_ret' not in s:
@@ -362,8 +363,22 @@ jobs:
           find Ksubxx -name '*.rej' -print
 
           # 3) Filet de securite : renomme tout token ksu restant (idempotent)
+          #    ATTENTION : l'objet unity bxx reste nomme ksu.o (le patch officiel
+          #    ne renomme que les macros) -> CFLAGS_ksu.o / CFLAGS_REMOVE_ksu.o
+          #    doivent etre proteges, sinon toute l'unite perd ses -I/-D/-Wno-*.
+          sed -i -e 's/CFLAGS_REMOVE_ksu\.o/CFLAGS_REMOVE_XOBJ.o/g' \
+                 -e 's/CFLAGS_ksu\.o/CFLAGS_XOBJ.o/g' Ksubxx/kernel/Makefile
+
           find Ksubxx -type f \( -name '*.c' -o -name '*.h' -o -name 'Makefile' -o -name 'Kconfig' \) \
             -exec sed -i -E 's/ksu_/ksb_/g; s/KSU_/KSB_/g; s/CONFIG_KSU\b/CONFIG_KSB/g' {} +
+
+          # restoration des tokens d'objet unity
+          sed -i -e 's/CFLAGS_REMOVE_XOBJ\.o/CFLAGS_REMOVE_ksu.o/g' \
+                 -e 's/CFLAGS_XOBJ\.o/CFLAGS_ksu.o/g' Ksubxx/kernel/Makefile
+          grep -q '^CFLAGS_ksu\.o +=' Ksubxx/kernel/Makefile \
+            || { echo "ECHEC: CFLAGS_ksu.o perdu lors du renommage"; exit 1; }
+          grep -q 'obj-$(CONFIG_KSB) := ksu\.o' Ksubxx/kernel/Makefile \
+            || { echo "ECHEC: objet unity ksu.o non lie a CONFIG_KSB"; exit 1; }
 
           # 4) Glue SuSFS de bxx : symboles NON static aussi definis par KSUNext
           #    (pas de token "ksu" dedans -> renommage explicite obligatoire)
