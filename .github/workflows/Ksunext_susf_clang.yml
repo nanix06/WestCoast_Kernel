@@ -1,4 +1,4 @@
-name: Mojito - WestCoast-KSUNext-susfs
+name: Mojito-WC-KSUNext-susfs-clang
 
 on:
   workflow_dispatch:
