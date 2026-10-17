@@ -396,6 +396,44 @@ jobs:
           grep -rq 'ksb_ksud_init()' Ksubxx/kernel/runtime/ksud.c \
             || { echo "ECHEC: ksb_ksud_init non defini"; exit 1; }
 
+          # 3c) Interface userspace : le sed global a aussi renomme des CHAINES que le manager /
+          #     ksud / la sepolicy attendent telles quelles -> on les restaure.
+          #     - "[ksu_driver]" : le manager retrouve le fd du pilote par ce nom dans /proc/self/fd
+          #     - "ksu_file"     : type SELinux (existe une seule fois dans la policy)
+          sed -i -E \
+            -e 's/"\[ksb_driver\]"/"[ksu_driver]"/g' \
+            -e 's/"\[ksb_driver_su\]"/"[ksu_driver_su]"/g' \
+            -e 's/"\[ksb_sulog\]"/"[ksu_sulog]"/g' \
+            -e 's/"\[ksb_fdwrapper\]"/"[ksu_fdwrapper]"/g' \
+            -e 's/"ksb_file"/"ksu_file"/g' \
+            Ksubxx/kernel/supercall/supercall.c Ksubxx/kernel/sulog/fd.c \
+            Ksubxx/kernel/infra/file_wrapper.c Ksubxx/kernel/selinux/selinux.h
+          grep -q '"\[ksu_driver\]"' Ksubxx/kernel/supercall/supercall.c \
+            || { echo "ECHEC: nom du fd pilote [ksu_driver] non restaure"; exit 1; }
+          grep -q '"ksu_file"' Ksubxx/kernel/selinux/selinux.h \
+            || { echo "ECHEC: type SELinux ksu_file non restaure"; exit 1; }
+
+          # 3d) Coexistence avec KernelSU-Next sur le syscall reboot : les deux pilotes
+          #     repondent a la meme magie 0xDEADBEEF/0xCAFEBABE et ecrivent un fd dans le meme
+          #     pointeur utilisateur -> le second ecrase le premier. KSUNext ne repond qu'a
+          #     root/apps autorisees ; on restreint pareil cote ksubxx (root ou SON manager).
+          python3 - <<'PY2'
+          p = 'Ksubxx/kernel/supercall/supercall.c'
+          s = open(p).read()
+          old = '\tif (magic2 == KSB_INSTALL_MAGIC2) {\n\t\tint fd = ksb_install_fd();'
+          if s.count(old) != 1:
+              raise SystemExit('ECHEC: ancre install fd (reboot) introuvable: %d' % s.count(old))
+          new = ('\tif (magic2 == KSB_INSTALL_MAGIC2) {\n'
+                 '\t\tint fd;\n\n'
+                 '\t\t/* coexistence KSUNext : ne pas repondre aux autres managers */\n'
+                 '\t\tif (current_uid().val != 0 && !is_manager())\n'
+                 '\t\t\treturn 0;\n\n'
+                 '\t\tfd = ksb_install_fd();')
+          open(p, 'w').write(s.replace(old, new, 1))
+          PY2
+          grep -q 'coexistence KSUNext' Ksubxx/kernel/supercall/supercall.c \
+            || { echo "ECHEC: garde reboot non appliquee"; exit 1; }
+
           # 4) Glue SuSFS de bxx : symboles NON static aussi definis par KSUNext
           #    (pas de token "ksu" dedans -> renommage explicite obligatoire)
           find Ksubxx -type f \( -name '*.c' -o -name '*.h' \) -exec sed -i -E \
@@ -426,7 +464,8 @@ jobs:
           if grep -rEn 'ksu_|KSU_|CONFIG_KSU([^A-Za-z0-9_]|$)' \
                Ksubxx/kernel --include='*.c' --include='*.h' --include='Makefile' --include='Kconfig' \
                | grep -v 'CFLAGS_ksu\.o' | grep -v 'ksu\.o' | grep -v 'depends on KSU' \
-               | grep -v 'if KSU = m' | grep -vE 'me\.weishu\.kernelsu'; then
+               | grep -v 'if KSU = m' | grep -vE 'me\.weishu\.kernelsu' \
+               | grep -vE '"\[ksu_(driver|driver_su|sulog|fdwrapper)\]"|"ksu_file"'; then
             echo "ECHEC: tokens ksu/KSU residuels dans Ksubxx (voir ci-dessus)"
             exit 1
           fi
