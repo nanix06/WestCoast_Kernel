@@ -81,8 +81,9 @@ jobs:
         run: |
           git clone --depth=1 -b main https://github.com/nanix06/Patch_Ksu_SuSFS.git patches
           patch -p1 --fuzz=3 < patches/Patches/SU_kernel/patch_ksunext.patch || true
-          patch -p1 --fuzz=3 < patches/Patches/SU_kernel/patch_ksubxx.patch || true
+          patch -p1 --fuzz=3 < patches/Patches/SU_kernel/ksubxx_renamed_ksb.patch || true
           patch -p1 --fuzz=3 < patches/Patches/SuSFS_Kernel/50_add_susfs_in_kernel-4.14.patch || true
+          patch -p1 --fuzz=3 < patches/Patches/Fix/susfs_fix_nameic.patch || true
           patch -p1 --fuzz=3 < patches/Patches/Fix/susfs_fix_statc.patch || true
           grep -q "susfs_def.h" fs/stat.c
           patch -p1 --fuzz=3 < patches/Patches/SuSFS_Kernel/55_try_umount_for_susfs.patch || true
