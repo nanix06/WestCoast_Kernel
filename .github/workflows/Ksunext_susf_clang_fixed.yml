@@ -1,4 +1,4 @@
-name: Mojito-WC-KSUNext-susfs-clang
+name: WC-Ksubxx-KSUNext-susfs-clang
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       clang_version:
         description: "Version de clang/LLVM (ex: 21, 22, 23)"
         required: true
-        default: "21"
+        default: "23"
 
 permissions:
   contents: read
@@ -197,7 +197,7 @@ jobs:
           cd KernelSU
           patch -p1 < susfs_patch_ksunext.patch || true
           cd ..
-
+          
           # For kernelsu bxx
           cp patches/Patches/SuSFS_Ksu/susfs_patch_ksubxx.patch Ksubxx/
           cd Ksubxx
