@@ -269,8 +269,6 @@ jobs:
       - name: Préparer les fichiers
         run: |
           mkdir -p release
-          cp out/arch/arm64/boot/Image.gz release/ 2>/dev/null || true
-          cp out/arch/arm64/boot/Image.gz-dtb release/ 2>/dev/null || true
           cp out/arch/arm64/boot/Image release/ 2>/dev/null || true
           sha256sum release/* > release/SHA256SUMS
 
