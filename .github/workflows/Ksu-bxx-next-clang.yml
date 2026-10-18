@@ -386,6 +386,10 @@ jobs:
             -e 's/\bif KSU = m/if KSB = m/' \
             -e 's/\bselect KSU\b/select KSB/' \
             Ksubxx/kernel/Kconfig
+          # le symbole racine ne doit pas dependre de lui-meme (recursive dependency)
+          sed -i '/^config KSB$/,/^$/{/^[[:space:]]*depends on KSB$/d}' Ksubxx/kernel/Kconfig
+          sed -n '/^config KSB$/,/^$/p' Ksubxx/kernel/Kconfig | grep -q 'depends on KSB$' \
+            && { echo "ECHEC: config KSB depend encore de KSB"; exit 1; }
 
           # restoration des tokens d'objet unity
           sed -i -e 's/CFLAGS_REMOVE_XOBJ\.o/CFLAGS_REMOVE_ksu.o/g' \
