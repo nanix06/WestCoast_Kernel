@@ -114,7 +114,7 @@ jobs:
           ./scripts/config --file out/.config --enable DISPLAY_FEATURE_OPTION
 
           ./scripts/config --file out/.config \
-            --set-str LOCALVERSION "-WestCoast-SuSFSඞ"
+            --set-str LOCALVERSION "-WestCoast/SuSFS"
           ./scripts/config --file out/.config --disable CONFIG_LOCALVERSION_AUTO
 
           make O=out ARCH=arm64 \
