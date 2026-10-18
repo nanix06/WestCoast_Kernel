@@ -87,17 +87,13 @@ jobs:
           ./scripts/config --file out/.config --enable KSU
           ./scripts/config --file out/.config --disable KSU_KPROBES_KSUD
           ./scripts/config --file out/.config --enable CONFIG_KALLSYMS_ALL
-          ./scripts/config --file out/.config --enable CONFIG_KSU_MANUAL_HOOK
 
           # SUSFS
           ./scripts/config --file out/.config --enable KSU_SUSFS
-          ./scripts/config --file out/.config --enable KSU_SUSFS_HAS_MAGIC_MOUNT
           ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_PATH
-          ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_MOUNT
+          ./scripts/config --file out/.config --disable KSU_SUSFS_SUS_MOUNT
           ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_KSTAT
-          ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_OVERLAYFS
-          ./scripts/config --file out/.config --enable KSU_SUSFS_TRY_UMOUNT
-          ./scripts/config --file out/.config --enable KSU_SUSFS_SPOOF_UNAME_RELEASE
+          ./scripts/config --file out/.config --enable KSU_SUSFS_SPOOF_UNAME
           ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_MAP
           ./scripts/config --file out/.config --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
 
@@ -114,7 +110,7 @@ jobs:
           ./scripts/config --file out/.config --enable DISPLAY_FEATURE_OPTION
 
           ./scripts/config --file out/.config \
-            --set-str LOCALVERSION "-WestCoast/SuSFS"
+            --set-str LOCALVERSION "-WestCoast-SuSFSඞ"
           ./scripts/config --file out/.config --disable CONFIG_LOCALVERSION_AUTO
 
           make O=out ARCH=arm64 \
