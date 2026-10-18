@@ -360,9 +360,14 @@ jobs:
           # 2) Renommage global ksu -> ksb (patch officiel nanix06)
           #    Certaines hunks peuvent echouer la ou SuSFS a modifie le fichier :
           #    le sed ci-dessous rattrape tout ce qui reste.
-          ( cd Ksubxx && patch -p1 --fuzz=3 --batch < ../patches/Patches/SU_kernel/ksubxx_renamed_ksb.patch ) \
-            || echo "ATTENTION: ksubxx_renamed_ksb partiellement applique, sed de rattrapage..."
-          find Ksubxx -name '*.rej' -print
+          #    Le patch n'est plus dans le depot de patchs : optionnel, le sed fait le travail.
+          if [ -f patches/Patches/SU_kernel/ksubxx_renamed_ksb.patch ]; then
+            ( cd Ksubxx && patch -p1 --fuzz=3 --batch < ../patches/Patches/SU_kernel/ksubxx_renamed_ksb.patch ) \
+              || echo "ATTENTION: ksubxx_renamed_ksb partiellement applique, sed de rattrapage..."
+          else
+            echo "INFO: ksubxx_renamed_ksb.patch absent, renommage 100% sed"
+          fi
+          find Ksubxx -name '*.rej' -print -delete  # rejets = renommages purs, couverts par le sed
 
           # 3) Filet de securite : renomme tout token ksu restant (idempotent)
           #    ATTENTION : l'objet unity bxx reste nomme ksu.o (le patch officiel
@@ -373,6 +378,14 @@ jobs:
 
           find Ksubxx -type f \( -name '*.c' -o -name '*.h' -o -name 'Makefile' -o -name 'Kconfig' \) \
             -exec sed -i -E 's/ksu_/ksb_/g; s/KSU_/KSB_/g; s/CONFIG_KSU\b/CONFIG_KSB/g' {} +
+
+          # Symboles Kconfig "nus" (sans underscore) : le patch officiel s'en chargeait
+          sed -i -E \
+            -e 's/^config KSU$/config KSB/' \
+            -e 's/\bdepends on KSU\b/depends on KSB/' \
+            -e 's/\bif KSU = m/if KSB = m/' \
+            -e 's/\bselect KSU\b/select KSB/' \
+            Ksubxx/kernel/Kconfig
 
           # restoration des tokens d'objet unity
           sed -i -e 's/CFLAGS_REMOVE_XOBJ\.o/CFLAGS_REMOVE_ksu.o/g' \
@@ -392,9 +405,12 @@ jobs:
             -e 's/KSB_KPROBES_KSBD/KSB_KPROBES_KSUD/g' \
             -e 's/kp_ksbd_init/kp_ksud_init/g' \
             -e 's/ksb_ksbd_init/ksb_ksud_init/g' {} +
+          # symboles sans prefixe ksu_ (collision avec KSUNext) : l'ancien patch les renommait
+          find Ksubxx -type f \( -name '*.c' -o -name '*.h' \) -exec sed -i -E \
+            -e 's/(^|[^A-Za-z0-9_])setup_selinux\(/\1ksb_setup_selinux(/g' {} +
           grep -rq 'ksb_on_boot_completed();' Ksubxx/kernel/supercall/dispatch.c \
             || { echo "ECHEC: dispatch.c n'appelle pas ksb_on_boot_completed"; exit 1; }
-          grep -rq 'ksb_ksud_init()' Ksubxx/kernel/runtime/ksud.c \
+          grep -rq 'ksb_ksud_init()' Ksubxx/kernel/runtime/ksud_integration.c \
             || { echo "ECHEC: ksb_ksud_init non defini"; exit 1; }
 
           # 3c) Interface userspace : le sed global a aussi renomme des CHAINES que le manager /
@@ -407,8 +423,8 @@ jobs:
             -e 's/"\[ksb_sulog\]"/"[ksu_sulog]"/g' \
             -e 's/"\[ksb_fdwrapper\]"/"[ksu_fdwrapper]"/g' \
             -e 's/"ksb_file"/"ksu_file"/g' \
-            Ksubxx/kernel/supercall/supercall.c Ksubxx/kernel/sulog/fd.c \
-            Ksubxx/kernel/infra/file_wrapper.c Ksubxx/kernel/selinux/selinux.h
+            $(ls Ksubxx/kernel/supercall/supercall.c Ksubxx/kernel/sulog/*.c \
+              Ksubxx/kernel/infra/file_wrapper.c Ksubxx/kernel/selinux/selinux.h 2>/dev/null)
           grep -q '"\[ksu_driver\]"' Ksubxx/kernel/supercall/supercall.c \
             || { echo "ECHEC: nom du fd pilote [ksu_driver] non restaure"; exit 1; }
           grep -q '"ksu_file"' Ksubxx/kernel/selinux/selinux.h \
