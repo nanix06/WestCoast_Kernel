@@ -49,7 +49,8 @@ jobs:
 
           # 1. Patch du noyau
           patch -p1 --fuzz=3 < patches/Patches/SU_kernel/patch_ksubxx.patch 
-          patch -p1 --fuzz=3 < patches/Patches/SuSFS_Kernel/50_add_susfs_in_kernel-4.14.patch 
+          patch -p1 --fuzz=3 < patches/Patches/SuSFS_Kernel/50_add_susfs_in_kernel-4.14.patch
+          patch -p1 --fuzz=3 < patches/Patches/Fix/susfs_fix_statc.patch || true
           patch -p1 --fuzz=3 < patches/Patches/SuSFS_Kernel/55_try_umount_for_susfs.patch 
           
           # 2. Patch spécifique à KernelSU
