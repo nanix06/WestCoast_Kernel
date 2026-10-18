@@ -624,7 +624,7 @@ jobs:
           # SUSFS cote KSUNext
           ./scripts/config --file out/.config --enable KSU_SUSFS
           ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_PATH
-          ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_MOUNT
+          ./scripts/config --file out/.config --disable KSU_SUSFS_SUS_MOUNT
           ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_KSTAT
           ./scripts/config --file out/.config --enable KSU_SUSFS_TRY_UMOUNT
           ./scripts/config --file out/.config --enable KSU_SUSFS_SPOOF_UNAME
