@@ -661,9 +661,9 @@ jobs:
           # SUS_MOUNT : le coeur SuSFS du noyau (fs/susfs.c, susfs.h) est garde par CONFIG_KSU_SUSFS_SUS_MOUNT ;
           # backslashxx appelle susfs_set_hide_sus_mnts_for_non_su_procs() -> doit etre actif (inactif tant
           # qu'on ne l'active pas via la commande userspace).
-          ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_MOUNT
+          ./scripts/config --file out/.config --disable KSU_SUSFS_SUS_MOUNT
           ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_KSTAT
-          ./scripts/config --file out/.config --disable KSU_SUSFS_TRY_UMOUNT
+          ./scripts/config --file out/.config --enable KSU_SUSFS_TRY_UMOUNT
           ./scripts/config --file out/.config --enable KSU_SUSFS_SPOOF_UNAME
           ./scripts/config --file out/.config --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
           ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_MAP
@@ -719,8 +719,8 @@ jobs:
           done
 
           # Info (non bloquant) : try_umount cote bxx
-          if grep -q '^CONFIG_KSB_SUSFS_TRY_UMOUNT=y' out/.config; then
-            echo 'INFO: KSB_SUSFS_TRY_UMOUNT actif'
+          if grep -q '^CONFIG_KSB_SUSFS_TRY_UMOUNT=n' out/.config; then
+            echo 'INFO: KSB_SUSFS_TRY_UMOUNT inactif'
           else
             echo 'INFO: KSB_SUSFS_TRY_UMOUNT inexistant/inactif cote bxx (ignore)'
           fi
