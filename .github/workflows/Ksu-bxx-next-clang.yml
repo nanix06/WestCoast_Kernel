@@ -17,7 +17,7 @@ env:
   DEFCONFIG: mojito_defconfig
   CROSS_COMPILE: aarch64-linux-gnu-
   CROSS_COMPILE_COMPAT: arm-linux-gnueabi-
-  CLANG_VER: ${{ inputs.clang_version || '21' }}
+  CLANG_VER: ${{ inputs.clang_version || '23' }}
   MAKE_ARGS: >-
     CC=clang
     HOSTCC=clang
