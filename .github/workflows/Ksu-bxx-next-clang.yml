@@ -1,0 +1,749 @@
+name: WC-Ksubxx-KSUNext-susfs-clang
+
+on:
+  workflow_dispatch:
+    inputs:
+      clang_version:
+        description: "Version de clang/LLVM (ex: 21, 22, 23)"
+        required: true
+        default: "23"
+
+permissions:
+  contents: read
+
+env:
+  ARCH: arm64
+  SUBARCH: arm64
+  DEFCONFIG: mojito_defconfig
+  CROSS_COMPILE: aarch64-linux-gnu-
+  CROSS_COMPILE_COMPAT: arm-linux-gnueabi-
+  CLANG_VER: ${{ inputs.clang_version || '21' }}
+  MAKE_ARGS: >-
+    CC=clang
+    HOSTCC=clang
+    HOSTCXX=clang++
+    LD=ld.lld
+    HOSTLD=ld.lld
+    AR=llvm-ar
+    NM=llvm-nm
+    OBJCOPY=llvm-objcopy
+    OBJDUMP=llvm-objdump
+    READELF=llvm-readelf
+    STRIP=llvm-strip
+    CLANG_TRIPLE=aarch64-linux-gnu-
+    CROSS_COMPILE=aarch64-linux-gnu-
+    CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+    LLVM_IAS=1
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Télécharger le source
+        uses: actions/checkout@v4
+        with:
+          ref: A17
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Installer les dépendances
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ccache flex git libssl-dev \
+            libelf-dev pahole python3 rsync unzip wget zip \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi \
+            lsb-release software-properties-common gnupg
+
+      - name: Installer Clang (apt.llvm.org)
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh "$CLANG_VER" all
+          sudo apt-get install -y "lld-$CLANG_VER" "llvm-$CLANG_VER"
+          rm -f llvm.sh
+
+          # Liens sans suffixe : le Makefile du kernel appelle "llvm-ar", "ld.lld"... en dur
+          for t in clang clang++ clang-cpp ld.lld lld llvm-ar llvm-nm llvm-objcopy \
+                   llvm-objdump llvm-readelf llvm-strip llvm-ranlib llvm-as llvm-size; do
+            [ -x "/usr/lib/llvm-$CLANG_VER/bin/$t" ] && \
+              sudo ln -sf "/usr/lib/llvm-$CLANG_VER/bin/$t" "/usr/local/bin/$t"
+          done
+          clang --version
+          ld.lld --version
+          llvm-ar --version | head -n1
+          clang --version | grep -q "version $CLANG_VER\." \
+            || { echo "Mauvaise version de clang (attendu: $CLANG_VER)"; exit 1; }
+
+      # ------------------------------------------------------------------
+      # 1) Patchs KERNEL TREE : hooks KernelSU-Next + SuSFS (côté noyau)
+      # ------------------------------------------------------------------
+      - name: Appliquer les patchs noyau (KernelSU-Next + SuSFS)
+        run: |
+          git clone --depth=1 -b main https://github.com/nanix06/Patch_Ksu_SuSFS.git patches
+
+          # Hooks KSUNext + wiring drivers/kernelsu + input.c/read_write.c
+          patch -p1 --fuzz=3 --batch < patches/Patches/SU_kernel/patch_ksunext.patch || true
+          grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig \
+            || { echo "ECHEC: wiring KSUNext absent de drivers/Kconfig"; exit 1; }
+          grep -q 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile \
+            || { echo "ECHEC: obj KSU absent de drivers/Makefile"; exit 1; }
+          grep -q 'ksu_handle_sys_reboot' kernel/reboot.c \
+            || { echo "ECHEC: hook reboot KSUNext absent"; exit 1; }
+          grep -q 'ksu_handle_faccessat' fs/open.c \
+            || { echo "ECHEC: hook faccessat KSUNext absent"; exit 1; }
+          grep -q 'ksu_input_hook' drivers/input/input.c \
+            || { echo "ECHEC: hook input KSUNext absent"; exit 1; }
+          grep -q 'ksu_handle_sys_read' fs/read_write.c \
+            || { echo "ECHEC: hook read KSUNext absent"; exit 1; }
+
+          # SuSFS core (kernel)
+          patch -p1 --fuzz=3 --batch < patches/Patches/SuSFS_Kernel/50_add_susfs_in_kernel-4.14.patch || true
+          test -f fs/susfs.c      || { echo "ECHEC: fs/susfs.c non cree"; exit 1; }
+          test -f include/linux/susfs_def.h || { echo "ECHEC: susfs_def.h non cree"; exit 1; }
+          grep -q 'susfs_is_current_ksu_domain' fs/namespace.c \
+            || { echo "ECHEC: glue SuSFS absent de fs/namespace.c"; exit 1; }
+
+          patch -p1 --fuzz=3 --batch < patches/Patches/Fix/susfs_fix_nameic.patch || true
+          patch -p1 --fuzz=3 --batch < patches/Patches/Fix/susfs_fix_statc.patch || true
+          grep -q "susfs_def.h" fs/stat.c || { echo "ECHEC: susfs_def.h absent de fs/stat.c"; exit 1; }
+          patch -p1 --fuzz=3 --batch < patches/Patches/SuSFS_Kernel/55_try_umount_for_susfs.patch || true
+          patch -p1 --fuzz=3 --batch < patches/Patches/SU_kernel/patch_ksu_path_umount.patch || true
+          grep -q 'can_umount' fs/namespace.c || { echo "ECHEC: can_umount absent"; exit 1; }
+
+          # compat inotify du patch fdinfo
+          sed -i 's/inotify_mark_user_mask(mark)/(mark->mask \& IN_ALL_EVENTS)/g' fs/notify/fdinfo.c
+          sed -i '/^orig_flow:$/a\\t\t;' fs/notify/fdinfo.c
+
+          # rendre la loop SuSFS appelable depuis les deux cotes
+          sed -i '0,/^static void susfs_run_sus_path_loop(void) {/s//void susfs_run_sus_path_loop(void) {/' fs/susfs.c
+
+      # ------------------------------------------------------------------
+      # 2) Hooks noyau backslashxx (KSB) injectes proprement (pas de patch
+      #    conflitant : ancrages verifies sur l'arbre A17)
+      # ------------------------------------------------------------------
+      - name: Injecter les hooks backslashxx (KSB) dans le noyau
+        run: |
+          python3 - <<'PY'
+          import re, sys
+
+          def read(p):
+              return open(p).read()
+
+          def write(p, s):
+              open(p, 'w').write(s)
+
+          def die(msg):
+              sys.exit('ECHEC INJECTION KSB: ' + msg)
+
+          # ======================= fs/stat.c =======================
+          p = 'fs/stat.c'
+          s = read(p)
+
+          # nettoyage historique (blocs mal places) - normalement 0 occurrence
+          blk = re.compile(r'#if defined\(CONFIG_KSU\) && !defined\(CONFIG_KSU_KPROBES_KSUD\)[^\n]*\n'
+                           r'(?:(?!#endif).*\n)*?'
+                           r'.*ksu_handle_(?:newfstat|fstat64)_ret\(&fd, &statbuf\);\n'
+                           r'(?:(?!#endif).*\n)*?#endif\n')
+          s, n = blk.subn('', s)
+          print('stat.c: blocs mal places retires:', n)
+
+          # include susfs_def.h si absent
+          if 'linux/susfs_def.h' not in s:
+              s = s.replace('#include "mount.h"\n',
+                            '#include "mount.h"\n\n#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif\n', 1)
+
+          lines = s.split('\n')
+
+          def find_start(name):
+              for i, l in enumerate(lines):
+                  if l.startswith('SYSCALL_DEFINE2(' + name + ','):
+                      return i
+              sys.exit('introuvable: ' + name)
+
+          def return_line(start):
+              depth = 0
+              for i in range(start, len(lines)):
+                  if depth == 1 and lines[i].strip() == 'return error;':
+                      return i
+                  depth += lines[i].count('{') - lines[i].count('}')
+              sys.exit('return error introuvable')
+
+          def add_call(name, call):
+              i = return_line(find_start(name))
+              lines[i:i] = [call]
+
+          # --- KSUNext : newfstat / fstat64 (externe fichier + appel) ---
+          if 'ksu_handle_newfstat_ret' not in '\n'.join(lines):
+              extern = ['#ifdef CONFIG_KSU',
+               'extern void ksu_handle_newfstat_ret(unsigned int *, struct stat __user **);',
+               '#if defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64)',
+               'extern void ksu_handle_fstat64_ret(unsigned long *, struct stat64 __user **);',
+               '#endif', '#endif', '']
+              lines[find_start('newfstat'):find_start('newfstat')] = extern
+              add_call('newfstat', '\t#ifdef CONFIG_KSU\n\tksu_handle_newfstat_ret(&fd, &statbuf);\n\t#endif')
+              add_call('fstat64', '\t#ifdef CONFIG_KSU\n\tksu_handle_fstat64_ret(&fd, &statbuf);\n\t#endif')
+
+          s = '\n'.join(lines)
+
+          # --- backslashxx : ksb_handle_stat apres chaque hook ksu_handle_stat ---
+          if 'ksb_handle_stat' not in s:
+              # Insere ksb_handle_stat apres chaque appel ksu_handle_stat(&dfd, ...) ;
+              # tolerant : "#if defined(CONFIG_KSU)" / "#ifdef CONFIG_KSU", espaces finaux, etc.
+              pat = re.compile(r'(?m)^[ \t]*#[ \t]*if(?:def)?[ \t]*(?:defined[ \t]*\([ \t]*)?CONFIG_KSU[ \t]*\)?[ \t]*\n'
+                               r'[ \t]*ksu_handle_stat\(&dfd, &filename, &flag\);[ \t]*\n'
+                               r'[ \t]*#[ \t]*endif[^\n]*\n')
+              ksb = ('#ifdef CONFIG_KSB\n'
+                     '\textern int ksb_handle_stat(int *, const char __user **, int *);\n'
+                     '\tksb_handle_stat(&dfd, &filename, &flag);\n'
+                     '#endif\n')
+              n_ksu = len(pat.findall(s))
+              if n_ksu != 2:
+                  die('stat.c: 2 hooks ksu_handle_stat attendus, trouves: %d' % n_ksu)
+              s = pat.sub(lambda m: m.group(0) + ksb, s)
+              print('stat.c: ksb_handle_stat insere apres', n_ksu, 'blocs')
+
+          # --- backslashxx : ksb_handle_newfstat_ret / fstat64_ret ---
+          if 'ksb_handle_newfstat_ret' not in s:
+              lines = s.split('\n')
+              def add_ksb_ret(name, call):
+                  i = return_line(find_start(name))
+                  blk = ['\t#if defined(CONFIG_KSB) && !defined(CONFIG_KSB_KPROBES_KSUD)',
+                         '\t#pragma GCC diagnostic push',
+                         '\t#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"',
+                         call,
+                         '\t#pragma GCC diagnostic pop',
+                         '\t#endif', '']
+                  lines[i:i] = blk
+              add_ksb_ret('newfstat', '\textern void ksb_handle_newfstat_ret(unsigned int *, struct stat __user **);\n\tksb_handle_newfstat_ret(&fd, &statbuf);')
+              add_ksb_ret('fstat64', '\textern void ksb_handle_fstat64_ret(unsigned long *, struct stat64 __user **);\n\tksb_handle_fstat64_ret(&fd, &statbuf);')
+              s = '\n'.join(lines)
+
+          write(p, s)
+
+          # ======================= fs/exec.c =======================
+          p = 'fs/exec.c'
+          s = read(p)
+          if 'ksb_handle_execveat' not in s:
+              anchor = '\tstruct files_struct *displaced;\n\tint retval;\n'
+              if s.count(anchor) != 1:
+                  die('exec.c: ancre do_execveat_common introuvable (%d)' % s.count(anchor))
+              ksb = (anchor +
+                     '\n#ifdef CONFIG_KSB\n'
+                     '\textern int ksb_handle_execveat(int *, struct filename **, void *, void *, int *);\n'
+                     '\tksb_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n'
+                     '#endif\n')
+              s = s.replace(anchor, ksb, 1)
+              write(p, s)
+
+          # ======================= fs/open.c =======================
+          p = 'fs/open.c'
+          s = read(p)
+          if 'ksb_handle_faccessat' not in s:
+              anchor = 'ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n'
+              if s.count(anchor) != 1:
+                  die('open.c: hook KSUNext faccessat introuvable (%d)' % s.count(anchor))
+              ksb = ('\n#ifdef CONFIG_KSB\n'
+                     '\textern int ksb_handle_faccessat(int *, const char __user **, int *, int *);\n'
+                     '\tksb_handle_faccessat(&dfd, &filename, &mode, NULL);\n'
+                     '#endif\n')
+              s = s.replace(anchor, anchor + ksb, 1)
+              write(p, s)
+
+          # ======================= kernel/reboot.c =======================
+          p = 'kernel/reboot.c'
+          s = read(p)
+          bad = re.compile(r'(SYSCALL_DEFINE4\(reboot,[^\n]*\n[^\n]*arg\)\n)'
+                           r'#if defined\(CONFIG_KSU\)[^\n]*\n[^\n]*\n[^\n]*\n#endif\n\n')
+          s, n = bad.subn(r'\1', s)
+          print('reboot.c: bloc mal place retire:', n)
+          if 'ksb_handle_sys_reboot' not in s:
+              anchor = 'ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif\n'
+              if s.count(anchor) != 1:
+                  die('reboot.c: hook KSUNext reboot introuvable (%d)' % s.count(anchor))
+              ksb = ('\n#if defined(CONFIG_KSB) && !defined(CONFIG_KSB_KPROBES_KSUD)\n'
+                     '\textern int ksb_handle_sys_reboot(int, int, unsigned int, void __user **);\n'
+                     '\tksb_handle_sys_reboot(magic1, magic2, cmd, &arg);\n'
+                     '#endif\n')
+              s = s.replace(anchor, anchor + ksb, 1)
+              write(p, s)
+
+          print('injection KSB terminee')
+          PY
+          grep -q 'ksu_handle_newfstat_ret(&fd' fs/stat.c
+          grep -q 'ksu_handle_fstat64_ret(&fd' fs/stat.c
+          grep -q 'ksb_handle_newfstat_ret(&fd' fs/stat.c
+          grep -q 'ksb_handle_fstat64_ret(&fd' fs/stat.c
+          test "$(grep -c 'ksb_handle_stat(&dfd' fs/stat.c)" = "2"
+          grep -q 'ksb_handle_execveat(&fd' fs/exec.c
+          grep -q 'ksb_handle_faccessat(&dfd' fs/open.c
+          grep -q 'ksb_handle_sys_reboot(magic1' kernel/reboot.c
+          echo 'OK: hooks KSUNext + KSB presents dans le noyau'
+
+      # ------------------------------------------------------------------
+      # 3) KernelSU-Next  ->  drivers/kernelsu  (symboles ksu_/KSU)
+      # ------------------------------------------------------------------
+      - name: Ajouter KernelSU-Next
+        run: |
+          git clone --depth=1 -b legacy https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU
+          ln -s ../KernelSU/kernel drivers/kernelsu
+          test -L drivers/kernelsu || { echo "ECHEC: symlink drivers/kernelsu"; exit 1; }
+          sed -i 's/get_monotonic_boottime(&ts)/get_monotonic_boottime64(\&ts)/' KernelSU/kernel/sulog/event.c
+          sed -i '/#include <linux\/uaccess.h>/a #include <linux/timekeeping.h>' KernelSU/kernel/sulog/event.c
+
+          bash patches/Patches/Fix/fix_sepolicy_mojito.sh KernelSU
+
+          printf '%s\n' \
+            '#define KSU_TYPE_VAL_TO_STRUCT' \
+            '#include "ss/avtab.h"' \
+            '#include "ss/constraint.h"' \
+            '#include "ss/ebitmap.h"' \
+            '#include "ss/hashtab.h"' \
+            '#include "ss/policydb.h"' \
+            '#include "ss/services.h"' \
+            '#include "ss/symtab.h"' \
+            '#include <linux/gfp.h>' \
+            '#include <linux/kernel.h>' \
+            '#include <linux/printk.h>' \
+            '#include <linux/slab.h>' \
+            '#include <linux/stddef.h>' \
+            '#include <linux/string.h>' \
+            '#include <linux/types.h>' \
+            '#include <linux/version.h>' \
+            '#include <linux/vmalloc.h>' \
+            | cat - KernelSU/kernel/selinux/sepolicy.c > /tmp/sepolicy.c.net \
+            && mv /tmp/sepolicy.c.net KernelSU/kernel/selinux/sepolicy.c
+
+          # L'legacy definit desormais ksu_policydb_fixup_len() lui-meme :
+          # n'ajoute le stub que s'il est absent (sinon redefinition -> erreur C)
+          if ! grep -qE '^int ksu_policydb_fixup_len\(' KernelSU/kernel/selinux/sepolicy.c; then
+            cat >> KernelSU/kernel/selinux/sepolicy.c <<'EOF'
+
+          int ksu_policydb_fixup_len(struct policydb *db, const char *tag)
+          {
+              return 0;
+          }
+          EOF
+          fi
+
+          # SuSFS pour KSUNext, applique DANS le repo KSUNext
+          cp patches/Patches/SuSFS_Ksu/susfs_patch_ksunext.patch KernelSU/
+          ( cd KernelSU && patch -p1 --fuzz=3 --batch < susfs_patch_ksunext.patch ) \
+            || echo "ATTENTION: susfs_patch_ksunext partiellement applique (voir .rej)"
+          grep -q 'config KSU_SUSFS' KernelSU/kernel/Kconfig \
+            || { echo "ECHEC: config KSU_SUSFS absent de Kconfig KSUNext"; exit 1; }
+          grep -rq 'CONFIG_KSU_SUSFS' KernelSU/kernel/selinux/selinux.c \
+            || { echo "ECHEC: glue SuSFS absent du cote KSUNext"; exit 1; }
+
+
+      # ------------------------------------------------------------------
+      # 4) backslashxx KernelSU -> drivers/ksubxx (symboles renommes ksb_/KSB)
+      #    - susfs_patch_ksubxx  : en PREMIER, sur l'arbre pristine (propre)
+      #    - ksubxx_renamed_ksb  : ensuite, + filet de securite sed
+      #    - KSU_SUSFS -> KSB_SUSFS dans Ksubxx (evite les symboles Kconfig doublons)
+      # ------------------------------------------------------------------
+      - name: Ajouter backslashxx KernelSU (Ksubxx)
+        run: |
+          git clone --depth=1 https://github.com/backslashxx/KernelSU.git Ksubxx
+          ln -s ../Ksubxx/kernel drivers/ksubxx
+          test -L drivers/ksubxx || { echo "ECHEC: symlink drivers/ksubxx"; exit 1; }
+
+          # 1) SuSFS cote bxx, sur l'arbre pristine (application garantie)
+          cp patches/Patches/SuSFS_Ksu/susfs_patch_ksubxx.patch Ksubxx/
+          ( cd Ksubxx && patch -p1 --fuzz=3 --batch < susfs_patch_ksubxx.patch ) \
+            || { echo "ECHEC: susfs_patch_ksubxx"; exit 1; }
+          grep -q 'config KSU_SUSFS' Ksubxx/kernel/Kconfig \
+            || { echo "ECHEC: config KSU_SUSFS absent de Kconfig bxx"; exit 1; }
+
+          # 2) Renommage global ksu -> ksb (patch officiel nanix06)
+          #    Certaines hunks peuvent echouer la ou SuSFS a modifie le fichier :
+          #    le sed ci-dessous rattrape tout ce qui reste.
+          ( cd Ksubxx && patch -p1 --fuzz=3 --batch < ../patches/Patches/SU_kernel/ksubxx_renamed_ksb.patch ) \
+            || echo "ATTENTION: ksubxx_renamed_ksb partiellement applique, sed de rattrapage..."
+          find Ksubxx -name '*.rej' -print
+
+          # 3) Filet de securite : renomme tout token ksu restant (idempotent)
+          #    ATTENTION : l'objet unity bxx reste nomme ksu.o (le patch officiel
+          #    ne renomme que les macros) -> CFLAGS_ksu.o / CFLAGS_REMOVE_ksu.o
+          #    doivent etre proteges, sinon toute l'unite perd ses -I/-D/-Wno-*.
+          sed -i -e 's/CFLAGS_REMOVE_ksu\.o/CFLAGS_REMOVE_XOBJ.o/g' \
+                 -e 's/CFLAGS_ksu\.o/CFLAGS_XOBJ.o/g' Ksubxx/kernel/Makefile
+
+          find Ksubxx -type f \( -name '*.c' -o -name '*.h' -o -name 'Makefile' -o -name 'Kconfig' \) \
+            -exec sed -i -E 's/ksu_/ksb_/g; s/KSU_/KSB_/g; s/CONFIG_KSU\b/CONFIG_KSB/g' {} +
+
+          # restoration des tokens d'objet unity
+          sed -i -e 's/CFLAGS_REMOVE_XOBJ\.o/CFLAGS_REMOVE_ksu.o/g' \
+                 -e 's/CFLAGS_XOBJ\.o/CFLAGS_ksu.o/g' Ksubxx/kernel/Makefile
+          grep -q '^CFLAGS_ksu\.o +=' Ksubxx/kernel/Makefile \
+            || { echo "ECHEC: CFLAGS_ksu.o perdu lors du renommage"; exit 1; }
+          grep -q 'obj-$(CONFIG_KSB) := ksu\.o' Ksubxx/kernel/Makefile \
+            || { echo "ECHEC: objet unity ksu.o non lie a CONFIG_KSB"; exit 1; }
+
+          # 3b) Rattrapage des hunks rejetes de ksubxx_renamed_ksb.patch :
+          #     (a) fonctions renommees par le patch SANS prefixe ksu_ (le sed ne les voit pas)
+          #     (b) ksud/ksbd : le patch et le sed divergent -> on normalise tout sur "ksud"
+          find Ksubxx -type f \( -name '*.c' -o -name '*.h' \) -exec sed -i -E \
+            -e 's/(^|[^A-Za-z0-9_])on_boot_completed\(/\1ksb_on_boot_completed(/g' \
+            -e 's/(^|[^A-Za-z0-9_])on_module_mounted\(/\1ksb_on_module_mounted(/g' {} +
+          find Ksubxx -type f \( -name '*.c' -o -name '*.h' -o -name 'Kconfig' \) -exec sed -i -E \
+            -e 's/KSB_KPROBES_KSBD/KSB_KPROBES_KSUD/g' \
+            -e 's/kp_ksbd_init/kp_ksud_init/g' \
+            -e 's/ksb_ksbd_init/ksb_ksud_init/g' {} +
+          grep -rq 'ksb_on_boot_completed();' Ksubxx/kernel/supercall/dispatch.c \
+            || { echo "ECHEC: dispatch.c n'appelle pas ksb_on_boot_completed"; exit 1; }
+          grep -rq 'ksb_ksud_init()' Ksubxx/kernel/runtime/ksud.c \
+            || { echo "ECHEC: ksb_ksud_init non defini"; exit 1; }
+
+          # 3c) Interface userspace : le sed global a aussi renomme des CHAINES que le manager /
+          #     ksud / la sepolicy attendent telles quelles -> on les restaure.
+          #     - "[ksu_driver]" : le manager retrouve le fd du pilote par ce nom dans /proc/self/fd
+          #     - "ksu_file"     : type SELinux (existe une seule fois dans la policy)
+          sed -i -E \
+            -e 's/"\[ksb_driver\]"/"[ksu_driver]"/g' \
+            -e 's/"\[ksb_driver_su\]"/"[ksu_driver_su]"/g' \
+            -e 's/"\[ksb_sulog\]"/"[ksu_sulog]"/g' \
+            -e 's/"\[ksb_fdwrapper\]"/"[ksu_fdwrapper]"/g' \
+            -e 's/"ksb_file"/"ksu_file"/g' \
+            Ksubxx/kernel/supercall/supercall.c Ksubxx/kernel/sulog/fd.c \
+            Ksubxx/kernel/infra/file_wrapper.c Ksubxx/kernel/selinux/selinux.h
+          grep -q '"\[ksu_driver\]"' Ksubxx/kernel/supercall/supercall.c \
+            || { echo "ECHEC: nom du fd pilote [ksu_driver] non restaure"; exit 1; }
+          grep -q '"ksu_file"' Ksubxx/kernel/selinux/selinux.h \
+            || { echo "ECHEC: type SELinux ksu_file non restaure"; exit 1; }
+
+          # 3d) Coexistence avec KernelSU-Next : traitee dans l'etape suivante (4b)
+
+          # 4) Glue SuSFS de bxx : symboles NON static aussi definis par KSUNext
+          #    (pas de token "ksu" dedans -> renommage explicite obligatoire)
+          find Ksubxx -type f \( -name '*.c' -o -name '*.h' \) -exec sed -i -E \
+            -e 's/susfs_is_sid_equal/susfs_ksb_is_sid_equal/g' \
+            -e 's/susfs_get_sid_from_name/susfs_ksb_get_sid_from_name/g' \
+            -e 's/susfs_get_current_sid/susfs_ksb_get_current_sid/g' \
+            -e 's/susfs_is_current_zygote_domain/susfs_ksb_is_current_zygote_domain/g' \
+            -e 's/susfs_is_current_init_domain/susfs_ksb_is_current_init_domain/g' \
+            -e 's/susfs_init_sid/susfs_ksb_init_sid/g' \
+            -e 's/susfs_zygote_sid/susfs_ksb_zygote_sid/g' \
+            -e 's/susfs_priv_app_sid/susfs_ksb_priv_app_sid/g' \
+            {} +
+
+          # 5) Verifications dures
+          grep -q '^config KSB$' Ksubxx/kernel/Kconfig \
+            || { echo "ECHEC: config KSB non renomme"; exit 1; }
+          grep -q 'obj-$(CONFIG_KSB)' Ksubxx/kernel/Makefile \
+            || { echo "ECHEC: obj CONFIG_KSB non renomme"; exit 1; }
+          grep -rq 'ksb_handle_execveat' Ksubxx/kernel \
+            || { echo "ECHEC: ksb_handle_execveat absent"; exit 1; }
+          grep -rq 'ksb_setup_selinux' Ksubxx/kernel \
+            || { echo "ECHEC: ksb_setup_selinux absent"; exit 1; }
+          grep -q 'config KSB_SUSFS' Ksubxx/kernel/Kconfig \
+            || { echo "ECHEC: config KSB_SUSFS absent"; exit 1; }
+          grep -rq 'CONFIG_KSB_SUSFS' Ksubxx/kernel/ksu.c \
+            || { echo "ECHEC: gardes CONFIG_KSB_SUSFS absentes"; exit 1; }
+          # plus aucun token ksu/KSU "de bxx" ne doit subsister
+          if grep -rEn 'ksu_|KSU_|CONFIG_KSU([^A-Za-z0-9_]|$)' \
+               Ksubxx/kernel --include='*.c' --include='*.h' --include='Makefile' --include='Kconfig' \
+               | grep -v 'CFLAGS_ksu\.o' | grep -v 'ksu\.o' | grep -v 'depends on KSU' \
+               | grep -v 'if KSU = m' | grep -vE 'me\.weishu\.kernelsu' \
+               | grep -vE '"\[ksu_(driver|driver_su|sulog|fdwrapper)\]"|"ksu_file"'; then
+            echo "ECHEC: tokens ksu/KSU residuels dans Ksubxx (voir ci-dessus)"
+            exit 1
+          fi
+
+          # 6) Wiring kernelspace
+          printf '\nobj-$(CONFIG_KSB) += ksubxx/\n' >> drivers/Makefile
+          printf '\nsource "drivers/ksubxx/Kconfig"\n' >> drivers/Kconfig
+          grep -q 'ksubxx/Kconfig' drivers/Kconfig || exit 1
+          grep -q 'ksubxx/' drivers/Makefile || exit 1
+          echo 'OK: Ksubxx integre (CONFIG_KSB)'
+
+      # ------------------------------------------------------------------
+      # 4b) Coexistence KSUNext / ksubxx : UN SEUL pilote actif (installation du fd)
+      #     Regle appliquee identiquement des deux cotes :
+      #       ksubxx actif  si  /data/adb/bxx_owner existe (forcage manuel)
+      #                     OU (manager ksubxx detecte ET manager KSUNext non detecte)
+      #       sinon KSUNext actif (defaut : aucun manager, les deux, ou KSUNext seul)
+      #     Le pilote inactif n'installe aucun fd : manager, ksud et modules ne parlent
+      #     qu'a un seul pilote. La detection du manager est celle de chaque pilote.
+      # ------------------------------------------------------------------
+      - name: Coexistence KSUNext / ksubxx (pilote actif automatique)
+        run: |
+          python3 - <<'PYC'
+          import os, re, sys
+
+          def die(msg):
+              print('ECHEC COEXISTENCE: ' + msg)
+              os.system('ls -R KernelSU/kernel/manager Ksubxx/kernel/manager 2>&1 | head -n 40')
+              os.system('grep -rn "manager_appid" KernelSU/kernel Ksubxx/kernel | head -n 60')
+              sys.exit(1)
+
+          def need(path, pattern, what):
+              if not os.path.isfile(path):
+                  die(path + ' introuvable')
+              if not re.search(pattern, open(path, errors='ignore').read()):
+                  die(what + ' introuvable dans ' + path)
+
+          # detection du manager = variable *_manager_appid de chaque pilote (-1 = aucun manager)
+          need('KernelSU/kernel/manager/manager_identity.h', r'extern\s+uid_t\s+ksu_manager_appid', 'ksu_manager_appid')
+          need('KernelSU/kernel/manager/manager_identity.h', r'define\s+KSU_INVALID_APPID\s+\(?-1\)?', 'KSU_INVALID_APPID = -1')
+          need('Ksubxx/kernel/manager/manager_identity.h', r'extern\s+uid_t\s+ksb_manager_appid', 'ksb_manager_appid')
+          need('Ksubxx/kernel/manager/manager_identity.h', r'define\s+KSB_INVALID_APPID\s+\(?-1\)?', 'KSB_INVALID_APPID = -1')
+
+          def make_header(prefix, ret):
+              return '\n'.join([
+                  '#ifndef _%s_COEX_H' % prefix.upper(),
+                  '#define _%s_COEX_H' % prefix.upper(),
+                  '#include <linux/types.h>',
+                  '#include <linux/compiler.h>',
+                  '#include <linux/cred.h>',
+                  '#include <linux/namei.h>',
+                  '#include <linux/path.h>',
+                  '#include <linux/printk.h>',
+                  'extern uid_t ksu_manager_appid;',
+                  'extern uid_t ksb_manager_appid;',
+                  '/* pilote actif : marqueur /data/adb/bxx_owner, ou manager ksubxx detecte et pas celui de KSUNext */',
+                  'static inline bool __maybe_unused %s_coex_is_active(void)' % prefix,
+                  '{',
+                  '\tstruct path p;',
+                  '\tbool marker = false;',
+                  '\tbool bxx_active;',
+                  '',
+                  '\tif (!kern_path("/data/adb/bxx_owner", LOOKUP_FOLLOW, &p)) {',
+                  '\t\tpath_put(&p);',
+                  '\t\tmarker = true;',
+                  '\t}',
+                  '\tbxx_active = marker || (ksb_manager_appid != (uid_t)-1 && ksu_manager_appid == (uid_t)-1);',
+                  '\tpr_info("coex: pilote actif = %s (marqueur=%d ksb_appid=%u ksu_appid=%u)\\n",',
+                  '\t\tbxx_active ? "ksubxx" : "KSUNext", marker, ksb_manager_appid, ksu_manager_appid);',
+                  '\treturn %s;' % ret,
+                  '}',
+                  '#endif']) + '\n'
+
+          # ---------------- KSUNext : task_work d'installation du fd ----------------
+          fp = 'KernelSU/kernel/supercall/supercall.c'
+          if not os.path.isfile(fp):
+              die(fp + ' introuvable')
+          s = open(fp).read()
+          old = ('static void ksu_install_fd_tw_func(struct callback_head *cb)\n'
+                 '{\n'
+                 '    struct ksu_install_fd_tw *tw = container_of(cb, struct ksu_install_fd_tw, cb);\n'
+                 '    int fd = ksu_install_fd();\n')
+          if s.count(old) != 1:
+              die('ancre ksu_install_fd_tw_func introuvable (%d) dans %s' % (s.count(old), fp))
+          new = ('static void ksu_install_fd_tw_func(struct callback_head *cb)\n'
+                 '{\n'
+                 '    struct ksu_install_fd_tw *tw = container_of(cb, struct ksu_install_fd_tw, cb);\n'
+                 '    int fd;\n\n'
+                 '    /* coexistence ksubxx : KSUNext inactif => aucun fd */\n'
+                 '    if (!ksu_coex_is_active()) {\n'
+                 '        kfree(tw);\n'
+                 '        return;\n'
+                 '    }\n'
+                 '    fd = ksu_install_fd();\n')
+          s = s.replace(old, new, 1)
+          s = s.replace('#include', '#include "coex_marker.h"\n#include', 1)
+          open(fp, 'w').write(s)
+          open(os.path.join(os.path.dirname(fp), 'coex_marker.h'), 'w').write(make_header('ksu', '!bxx_active'))
+
+          # ---------------- ksubxx : branche install fd du handler reboot ----------------
+          p = 'Ksubxx/kernel/supercall/supercall.c'
+          if not os.path.isfile(p):
+              die(p + ' introuvable')
+          s = open(p).read()
+          old = '\tif (magic2 == KSB_INSTALL_MAGIC2) {\n\t\tint fd = ksb_install_fd();'
+          if s.count(old) != 1:
+              die('ancre install fd (reboot) ksubxx introuvable (%d)' % s.count(old))
+          new = ('\tif (magic2 == KSB_INSTALL_MAGIC2) {\n'
+                 '\t\tint fd;\n\n'
+                 '\t\t/* coexistence KSUNext : ksubxx inactif => aucun fd */\n'
+                 '\t\tif (!ksb_coex_is_active())\n'
+                 '\t\t\treturn 0;\n\n'
+                 '\t\tfd = ksb_install_fd();')
+          s = s.replace(old, new, 1)
+          s = s.replace('#include', '#include "coex_marker.h"\n#include', 1)
+          open(p, 'w').write(s)
+          open(os.path.join(os.path.dirname(p), 'coex_marker.h'), 'w').write(make_header('ksb', 'bxx_active'))
+          print('OK: coexistence automatique appliquee des deux cotes')
+          PYC
+          grep -q 'coexistence ksubxx' KernelSU/kernel/supercall/supercall.c \
+            || { echo "ECHEC: garde coexistence KSUNext non appliquee"; exit 1; }
+          grep -q 'coexistence KSUNext' Ksubxx/kernel/supercall/supercall.c \
+            || { echo "ECHEC: garde coexistence ksubxx non appliquee"; exit 1; }
+          # info : autres appelants de l'installation de fd (a surveiller)
+          grep -rn "ksu_install_fd()" KernelSU/kernel || true
+          grep -rn "ksb_install_fd()" Ksubxx/kernel || true
+
+      - name: DIAG - identite des managers
+        if: always()
+        run: |
+          for f in KernelSU/kernel/manager/manager_identity.h KernelSU/kernel/manager/manager_identity.c \
+                   Ksubxx/kernel/manager/manager_identity.h Ksubxx/kernel/manager/manager_identity.c; do
+            if [ -f "$f" ]; then echo "##### $f"; cat "$f"; else echo "(absent) $f"; fi
+          done
+
+      # ------------------------------------------------------------------
+      # 5) KProfiles
+      # ------------------------------------------------------------------
+      - name: Ajouter KProfiles
+        run: |
+          git clone --depth=1 \
+            https://github.com/beakthoven/Kprofiles.git \
+            drivers/misc/kprofiles
+
+          printf '\nsource "drivers/misc/kprofiles/Kconfig"\n' >> drivers/misc/Kconfig
+          printf '\nobj-$(CONFIG_KPROFILES) += kprofiles/\n' >> drivers/misc/Makefile
+
+      # ------------------------------------------------------------------
+      # 6) Configuration
+      # ------------------------------------------------------------------
+      - name: Configurer le noyau
+        run: |
+          mkdir -p out
+
+          make O=out ARCH=arm64 \
+            $MAKE_ARGS \
+            "$DEFCONFIG"
+
+          # KernelSU-Next
+          ./scripts/config --file out/.config --enable KSU
+          ./scripts/config --file out/.config --enable KSU_MANUAL_HOOK
+          # KALLSYMS_ALL depend de DEBUG_KERNEL (absent du defconfig) -> sinon silencieusement ignore
+          ./scripts/config --file out/.config --enable DEBUG_KERNEL
+          ./scripts/config --file out/.config --enable KALLSYMS_ALL
+          # effet de bord de DEBUG_KERNEL (nouveau default, cout perf) : on le coupe
+          ./scripts/config --file out/.config --disable DEBUG_PREEMPT
+
+          # backslashxx (KSB)
+          ./scripts/config --file out/.config --enable KSB
+          ./scripts/config --file out/.config --disable KSB_KPROBES_KSUD
+          ./scripts/config --file out/.config --disable KSB_TAMPER_SYSCALL_TABLE
+          ./scripts/config --file out/.config --disable KSB_HACK_ARM64_BRANCH_LINK
+
+          # SUSFS cote KSUNext
+          ./scripts/config --file out/.config --enable KSU_SUSFS
+          ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_PATH
+          ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_MOUNT
+          ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_KSTAT
+          ./scripts/config --file out/.config --enable KSU_SUSFS_TRY_UMOUNT
+          ./scripts/config --file out/.config --enable KSU_SUSFS_SPOOF_UNAME
+          ./scripts/config --file out/.config --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_MAP
+
+          # SUSFS cote backslashxx
+          ./scripts/config --file out/.config --enable KSB_SUSFS
+          ./scripts/config --file out/.config --enable KSB_SUSFS_SUS_PATH
+          ./scripts/config --file out/.config --enable KSB_SUSFS_SUS_MOUNT
+          ./scripts/config --file out/.config --enable KSB_SUSFS_SUS_KSTAT
+          ./scripts/config --file out/.config --enable KSB_SUSFS_SPOOF_UNAME
+          ./scripts/config --file out/.config --enable KSB_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          ./scripts/config --file out/.config --enable KSB_SUSFS_SUS_MAP
+          # try_umount cote bxx : l'option peut ne pas exister (ignoree par olddefconfig)
+          ./scripts/config --file out/.config --enable KSB_SUSFS_TRY_UMOUNT
+
+          # Prerequis des modules de montage (Hybrid Mount / Mountify) : overlayfs + tmpfs xattr/ACL
+          ./scripts/config --file out/.config --enable OVERLAY_FS
+          ./scripts/config --file out/.config --enable TMPFS
+          ./scripts/config --file out/.config --enable TMPFS_XATTR
+          ./scripts/config --file out/.config --enable TMPFS_POSIX_ACL
+
+          # KProfiles
+          ./scripts/config --file out/.config --enable KPROFILES
+          ./scripts/config --file out/.config --set-val KP_DEFAULT_MODE 0
+          ./scripts/config --file out/.config --disable AUTO_KPROFILES_MSM_DRM
+          ./scripts/config --file out/.config --disable AUTO_KPROFILES_MI_DRM
+          ./scripts/config --file out/.config --disable AUTO_KPROFILES_FB
+          ./scripts/config --file out/.config --enable AUTO_KPROFILES_NONE
+
+          ./scripts/config --file out/.config \
+            --set-str LOCALVERSION "-WestCoast-Duo"
+          ./scripts/config --file out/.config --disable LOCALVERSION_AUTO
+
+          make O=out ARCH=arm64 \
+            $MAKE_ARGS \
+            olddefconfig
+
+          # Assertions : aucun symbole ne doit etre tombe silencieusement
+          for opt in KSU KSU_MANUAL_HOOK KALLSYMS_ALL KSB \
+                     KSU_SUSFS KSU_SUSFS_SUS_PATH KSU_SUSFS_TRY_UMOUNT KSU_SUSFS_SPOOF_UNAME \
+                     KSB_SUSFS KSB_SUSFS_SUS_PATH KSB_SUSFS_SPOOF_UNAME \
+                     OVERLAY_FS TMPFS_XATTR TMPFS_POSIX_ACL \
+                     KPROFILES; do
+            grep -q "^CONFIG_$opt=y" out/.config \
+              || { echo "ECHEC: CONFIG_$opt absent de .config final"; exit 1; }
+          done
+
+          # Info (non bloquant) : try_umount cote bxx
+          if grep -q '^CONFIG_KSB_SUSFS_TRY_UMOUNT=y' out/.config; then
+            echo 'INFO: KSB_SUSFS_TRY_UMOUNT actif'
+          else
+            echo 'INFO: KSB_SUSFS_TRY_UMOUNT inexistant/inactif cote bxx (ignore)'
+          fi
+          echo 'OK: configuration finale'
+
+      # ------------------------------------------------------------------
+      # 7) Build
+      # ------------------------------------------------------------------
+      - name: Compiler le noyau
+        run: |
+          make -j"$(nproc)" O=out ARCH=arm64 \
+            $MAKE_ARGS \
+            KCFLAGS="-Wno-error -Wno-visibility -Wno-unused-but-set-variable -Wno-int-conversion -Wno-fortify-source"
+
+      # ------------------------------------------------------------------
+      # 8) Verification post-build
+      # ------------------------------------------------------------------
+      - name: Verifier les symboles KSUNext + KSB
+        run: |
+          test -f out/vmlinux || { echo "ECHEC: vmlinux absent"; exit 1; }
+          test -f out/arch/arm64/boot/Image || { echo "ECHEC: Image absente"; exit 1; }
+
+          # Le noyau est lie en ThinLTO (CONFIG_LTO=y) : le LTO inline/interne les
+          # fonctions et les retire de vmlinux. On verifie donc les symboles dans les
+          # archives built-in.a (llvm-nm lit aussi le bitcode), pas dans vmlinux.
+          llvm-nm out/drivers/kernelsu/built-in.a > /tmp/ksu_syms.txt 2>/dev/null
+          llvm-nm out/drivers/ksubxx/built-in.a   > /tmp/ksb_syms.txt 2>/dev/null
+
+          # cote KSUNext (doit exister)
+          for sym in ksu_handle_execveat ksu_handle_faccessat ksu_handle_stat \
+                     ksu_handle_newfstat_ret ksu_handle_sys_reboot ksu_cred; do
+            grep -qw "$sym" /tmp/ksu_syms.txt \
+              || { echo "ECHEC: symbole KSUNext absent: $sym"; exit 1; }
+          done
+
+          # cote backslashxx (doit exister)
+          for sym in ksb_handle_execveat ksb_handle_faccessat ksb_handle_stat \
+                     ksb_handle_newfstat_ret ksb_handle_fstat64_ret ksb_handle_sys_reboot \
+                     ksb_setup_selinux ksb_cred; do
+            grep -qw "$sym" /tmp/ksb_syms.txt \
+              || { echo "ECHEC: symbole KSB absent: $sym"; exit 1; }
+          done
+
+          # pas de symbole global ksu/ksb/susfs defini des deux cotes
+          for f in ksu ksb; do
+            awk '$2 ~ /^[TDBRVW]$/ {print $3}' /tmp/${f}_syms.txt | sort -u > /tmp/${f}_def.txt
+          done
+          comm -12 /tmp/ksu_def.txt /tmp/ksb_def.txt | grep -E '^(ksu|ksb|susfs)' > /tmp/dups.txt || true
+          if [ -s /tmp/dups.txt ]; then
+            echo "ECHEC: symboles definis des deux cotes :"; cat /tmp/dups.txt; exit 1
+          fi
+
+          echo 'OK: KSUNext + KSB coexistent (lies dans vmlinux, symboles verifies dans built-in.a)'
+
+      # ------------------------------------------------------------------
+      # 9) Artefact
+      # ------------------------------------------------------------------
+      - name: Préparer les fichiers
+        run: |
+          mkdir -p release
+          cp out/arch/arm64/boot/Image release/ 2>/dev/null || true
+          cp out/.config release/kernel.config
+          sha256sum release/* > release/SHA256SUMS
+
+      - name: Envoyer l’artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mojito-strix-KernelSU-clang${{ inputs.clang_version }}
+          path: release/
+          if-no-files-found: error
