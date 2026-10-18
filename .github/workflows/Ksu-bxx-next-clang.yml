@@ -703,12 +703,19 @@ jobs:
 
           # Assertions : aucun symbole ne doit etre tombe silencieusement
           for opt in KSU KSU_MANUAL_HOOK KALLSYMS_ALL KSB \
-                     KSU_SUSFS KSU_SUSFS_SUS_PATH KSU_SUSFS_TRY_UMOUNT KSU_SUSFS_SPOOF_UNAME \
+                     KSU_SUSFS KSU_SUSFS_SUS_PATH KSU_SUSFS_SPOOF_UNAME \
                      KSB_SUSFS KSB_SUSFS_SUS_PATH KSB_SUSFS_SPOOF_UNAME \
                      OVERLAY_FS TMPFS_XATTR TMPFS_POSIX_ACL \
                      KPROFILES; do
             grep -q "^CONFIG_$opt=y" out/.config \
               || { echo "ECHEC: CONFIG_$opt absent de .config final"; exit 1; }
+          done
+
+          # Options qui doivent RESTER desactivees (verifie qu'aucune dependance ne les a reactivees)
+          for opt in KSU_SUSFS_TRY_UMOUNT KSB_SUSFS_SUS_MOUNT; do
+            if grep -q "^CONFIG_$opt=y" out/.config; then
+              echo "ECHEC: CONFIG_$opt est active alors qu'elle doit rester desactivee"; exit 1
+            fi
           done
 
           # Info (non bloquant) : try_umount cote bxx
