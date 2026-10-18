@@ -658,9 +658,7 @@ jobs:
           # SUSFS cote KSUNext
           ./scripts/config --file out/.config --enable KSU_SUSFS
           ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_PATH
-          # SUS_MOUNT : le coeur SuSFS du noyau (fs/susfs.c, susfs.h) est garde par CONFIG_KSU_SUSFS_SUS_MOUNT ;
-          # backslashxx appelle susfs_set_hide_sus_mnts_for_non_su_procs() -> doit etre actif (inactif tant
-          # qu'on ne l'active pas via la commande userspace).
+          # SUS_MOUNT : doit RESTER desactive (KSU et KSB), verifie apres olddefconfig
           ./scripts/config --file out/.config --disable KSU_SUSFS_SUS_MOUNT
           ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_KSTAT
           ./scripts/config --file out/.config --enable KSU_SUSFS_TRY_UMOUNT
@@ -712,7 +710,7 @@ jobs:
           done
 
           # Options qui doivent RESTER desactivees (verifie qu'aucune dependance ne les a reactivees)
-          for opt in KSU_SUSFS_TRY_UMOUNT KSB_SUSFS_SUS_MOUNT; do
+          for opt in KSU_SUSFS_SUS_MOUNT KSB_SUSFS_SUS_MOUNT; do
             if grep -q "^CONFIG_$opt=y" out/.config; then
               echo "ECHEC: CONFIG_$opt est active alors qu'elle doit rester desactivee"; exit 1
             fi
