@@ -412,6 +412,20 @@ jobs:
           # symboles sans prefixe ksu_ (collision avec KSUNext) : l'ancien patch les renommait
           find Ksubxx -type f \( -name '*.c' -o -name '*.h' \) -exec sed -i -E \
             -e 's/(^|[^A-Za-z0-9_])setup_selinux\(/\1ksb_setup_selinux(/g' {} +
+          # Normalisation idempotente (patch applique en partie ou pas du tout) : tout symbole global
+          # sans prefixe ksu_ defini aussi cote KSUNext passe en ksb_<nom>, que le nom soit deja
+          # prefixe ou non. Evite a la fois les collisions a l'edition de liens et les etats mixtes.
+          for n in allowed_for_su always_allow apply_kernelsu_rules cache_sid \
+                   escape_to_root_for_adb_root escape_with_root_profile get_pkg_from_apk_dir_path \
+                   getenforce handle_sepolicy is_adbd is_init is_zygote is_manager_apk \
+                   manager_or_root mount_list nuke_ext4_sysfs on_post_fs_data on_boot_completed \
+                   on_module_mounted only_manager only_root setenforce setup_mount_ns \
+                   track_throne setup_selinux; do
+            find Ksubxx -type f \( -name '*.c' -o -name '*.h' \) -exec sed -i -E \
+              "s/(^|[^A-Za-z0-9_])(ksb_)?${n}\b/\1ksb_${n}/g" {} +
+          done
+          # macro de chemin : le patch officiel renomme KSUD_PATH en KSBD_PATH a certains endroits
+          find Ksubxx -type f \( -name '*.c' -o -name '*.h' \) -exec sed -i 's/KSBD_PATH/KSUD_PATH/g' {} +
           grep -rq 'ksb_on_boot_completed();' Ksubxx/kernel/supercall/dispatch.c \
             || { echo "ECHEC: dispatch.c n'appelle pas ksb_on_boot_completed"; exit 1; }
           grep -rq 'ksb_ksud_init()' Ksubxx/kernel/runtime/ksud_integration.c \
@@ -644,7 +658,10 @@ jobs:
           # SUSFS cote KSUNext
           ./scripts/config --file out/.config --enable KSU_SUSFS
           ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_PATH
-          ./scripts/config --file out/.config --disable KSU_SUSFS_SUS_MOUNT
+          # SUS_MOUNT : le coeur SuSFS du noyau (fs/susfs.c, susfs.h) est garde par CONFIG_KSU_SUSFS_SUS_MOUNT ;
+          # backslashxx appelle susfs_set_hide_sus_mnts_for_non_su_procs() -> doit etre actif (inactif tant
+          # qu'on ne l'active pas via la commande userspace).
+          ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_MOUNT
           ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_KSTAT
           ./scripts/config --file out/.config --enable KSU_SUSFS_TRY_UMOUNT
           ./scripts/config --file out/.config --enable KSU_SUSFS_SPOOF_UNAME
