@@ -663,7 +663,7 @@ jobs:
           # qu'on ne l'active pas via la commande userspace).
           ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_MOUNT
           ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_KSTAT
-          ./scripts/config --file out/.config --enable KSU_SUSFS_TRY_UMOUNT
+          ./scripts/config --file out/.config --disable KSU_SUSFS_TRY_UMOUNT
           ./scripts/config --file out/.config --enable KSU_SUSFS_SPOOF_UNAME
           ./scripts/config --file out/.config --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
           ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_MAP
@@ -671,7 +671,7 @@ jobs:
           # SUSFS cote backslashxx
           ./scripts/config --file out/.config --enable KSB_SUSFS
           ./scripts/config --file out/.config --enable KSB_SUSFS_SUS_PATH
-          ./scripts/config --file out/.config --enable KSB_SUSFS_SUS_MOUNT
+          ./scripts/config --file out/.config --disable KSB_SUSFS_SUS_MOUNT
           ./scripts/config --file out/.config --enable KSB_SUSFS_SUS_KSTAT
           ./scripts/config --file out/.config --enable KSB_SUSFS_SPOOF_UNAME
           ./scripts/config --file out/.config --enable KSB_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
