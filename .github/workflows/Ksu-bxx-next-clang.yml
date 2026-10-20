@@ -692,7 +692,7 @@ jobs:
           ./scripts/config --file out/.config --enable AUTO_KPROFILES_NONE
 
           ./scripts/config --file out/.config \
-            --set-str LOCALVERSION "-WestCoast-Duo"
+            --set-str LOCALVERSION "-WestCoast"
           ./scripts/config --file out/.config --disable LOCALVERSION_AUTO
 
           make O=out ARCH=arm64 \
