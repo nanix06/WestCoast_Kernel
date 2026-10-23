@@ -86,7 +86,10 @@ jobs:
             echo "ERREUR: $FIX absent (repo Patch_Ksu_SuSFS incomplet)"
             exit 1
           }
-          patch -p1 --fuzz=3 < "$FIX"
+          # git apply (et non GNU patch) : le hunk fstat64 a 7 lignes de contexte avant
+          # et 2 apres, GNU patch le considere alors "ancre en fin de fichier" et le
+          # rejette ("Hunk #2 FAILED at 523"). git apply l'accepte avec le meme offset.
+          git apply --verbose "$FIX"
 
           grep -q 'ksu_handle_newfstat_ret' fs/stat.c
           grep -q 'ksu_handle_fstat64_ret' fs/stat.c
