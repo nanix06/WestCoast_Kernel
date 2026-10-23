@@ -6,7 +6,7 @@ on:
       clang_version:
         description: "Version de clang/LLVM (ex: 21, 22, 23)"
         required: true
-        default: "21"
+        default: "23"
 
 permissions:
   contents: read
@@ -17,7 +17,7 @@ env:
   DEFCONFIG: mojito_defconfig
   CROSS_COMPILE: aarch64-linux-gnu-
   CROSS_COMPILE_COMPAT: arm-linux-gnueabi-
-  CLANG_VER: ${{ inputs.clang_version || '21' }}
+  CLANG_VER: ${{ inputs.clang_version || '23' }}
   MAKE_ARGS: >-
     CC=clang
     HOSTCC=clang
@@ -58,7 +58,7 @@ jobs:
             gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi \
             lsb-release software-properties-common gnupg
 
-      - name: Installer clang 21 (apt.llvm.org)
+      - name: Installer clang (apt.llvm.org)
         run: |
           wget -q https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
