@@ -110,6 +110,27 @@ jobs:
           patch -p1 < susfs_patch_ksubxx.patch || true
           cd ..
 
+      - name: Ajouter Re:Kernel
+        run: |
+          # 1. Patch : fichiers du driver (drivers/net/rekernel + include/net)
+          #    et hooks binder / binder_alloc / signal.
+          patch -p1 < "patches/Patches/Re:Kernel/rekernel_extra.patch"
+
+          # 2. Integration kbuild (source Kconfig + obj-y), idempotente.
+          #    L'ancien script sed ne trouvait pas son "endif" : ce noyau
+          #    termine drivers/net/Kconfig par "endif # NETDEVICES".
+          bash "patches/Patches/Re:Kernel/rekernel_patches.sh"
+
+          # 3. Verifications : le build doit s'arreter ici si l'integration
+          #    a rate, plutot que de produire un kernel sans Re:Kernel.
+          test -f drivers/net/rekernel/rekernel.c
+          test -f include/net/rekernel.h
+          grep -Fq 'drivers/net/rekernel/Kconfig' drivers/net/Kconfig
+          grep -Fq 'obj-$(CONFIG_REKERNEL) += rekernel/' drivers/net/Makefile
+          grep -Fq 'CONFIG_REKERNEL' drivers/android/binder.c
+          grep -Fq 'CONFIG_REKERNEL' drivers/android/binder_alloc.c
+          grep -Fq 'CONFIG_REKERNEL' kernel/signal.c
+
       - name: Configurer le noyau
         run: |
           mkdir -p out
@@ -136,6 +157,11 @@ jobs:
           ./scripts/config --file out/.config --enable KSU_SUSFS_SUS_MAP
           ./scripts/config --file out/.config --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
 
+          # Re:Kernel
+          ./scripts/config --file out/.config --enable REKERNEL
+          ./scripts/config --file out/.config --enable REKERNEL_NETWORK
+          ./scripts/config --file out/.config --disable REKERNEL_DEBUG
+
           # KProfiles
           ./scripts/config --file out/.config --enable KPROFILES
           ./scripts/config --file out/.config --set-val KP_DEFAULT_MODE 0
@@ -155,7 +181,11 @@ jobs:
           make O=out ARCH=arm64 \
             $MAKE_ARGS \
             olddefconfig
-            
+
+          # Contrôle final : REKERNEL doit bien être =y dans la config générée
+          grep -q '^CONFIG_REKERNEL=y$' out/.config
+          grep -q '^CONFIG_REKERNEL_NETWORK=y$' out/.config
+
       - name: Compiler le noyau
         run: |
           make -j"$(nproc)" O=out ARCH=arm64 \
