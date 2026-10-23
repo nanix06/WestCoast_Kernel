@@ -102,7 +102,7 @@ jobs:
           patch -p1 --fuzz=3 < patches/Patches/Fix/susfs_fix_nameic.patch || true
           patch -p1 --fuzz=3 < patches/Patches/Fix/susfs_fix_statc.patch || true
           grep -q "susfs_def.h" fs/stat.c
-          patch -p1 --fuzz=3 < susfs/kernel_patches/55_try_umount_for_susfs.patch || true
+          patch -p1 --fuzz=3 < patches/Patches/SuSFS_Kernel/55_try_umount_for_susfs.patch || true
 
           # 2. Patch spécifique à KernelSU
           cp patches/Patches/SuSFS_Ksu/susfs_patch_ksubxx.patch KernelSU/
